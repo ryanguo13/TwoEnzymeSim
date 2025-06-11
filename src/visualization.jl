@@ -51,9 +51,10 @@ end
 Plot equilibrium constants as a function of ΔG0.
 """
 function plot_equilibrium_constants(ΔG0_range, equilibrium_constants)
-    p = plot(ΔG0_range, equilibrium_constants, linewidth=2,
+    p = plot(ΔG0_range, equilibrium_constants .* 1e-3, linewidth=2,
              xlabel="ΔG⁰ (J/mol)", ylabel="Equilibrium Constant K_eq",
-             title="Equilibrium Constants vs. Standard Gibbs Free Energy")
+             title="Equilibrium Constants vs. Standard Gibbs Free Energy",
+             )
     
     return p
 end
@@ -103,9 +104,9 @@ function plot_phase_portrait(sol)
     
     # Add markers at start and end points
     scatter!([sol[A][1]], [sol[B][1]], [sol[C][1]], 
-             label="Start", markersize=8, color=:green)
+             label="Start", markersize=4, color=:green)
     scatter!([sol[A][end]], [sol[B][end]], [sol[C][end]], 
-             label="End", markersize=8, color=:red)
+             label="End", markersize=4, color=:red)
     
     return p
 end 
