@@ -2,24 +2,24 @@ using Catalyst
 
 # System parameters
 params = [
-    k_f => 2.0,      # Forward rate constant (positive)
-    k_yr => 1.5,     # Reverse rate constant (positive)  
-    k_ry => 1.8,     # B→C rate constant
-    k_r => 0.5,      # Enzyme release rate constant
-    k_y => 0.3,      # Enzyme binding rate constant
-    k_rf => 0.4,     # Other rate constant
-    E_tot => 0.0,   # Total enzyme concentration
-    ΔG0 => -30.0,  # Standard Gibbs free energy change (negative)
-    R => 8.314,      # Gas constant
-    T => 298.0       # Temperature (K)
+    k1f => 2.0,      # A + E1 -> AE1
+    k1r => 1.5,      # AE1 -> A
+    k3  => 1.8,      # AE1 -> B
+    k2f => 1.2,      # B + E2 -> BE2
+    k2r => 1.0,      # BE2 -> B
+    k4  => 1.6,      # BE2 -> C
+    E1_tot => 20.0,  # Total E1
+    E2_tot => 15.0   # Total E2
 ]
 
 # Initial conditions
 initial_conditions = [
     A => 5.0,
-    B => 2.0, 
-    C => 1.0
+    B => 2.0,
+    C => 1.0,
+    AE1 => 0.0,
+    BE2 => 0.0
 ]
 
 # Time span
-tspan = (0.0, 10.0) 
+tspan = (0.0, 5.0) 

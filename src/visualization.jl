@@ -51,11 +51,10 @@ end
 Plot equilibrium constants as a function of ΔG0.
 """
 function plot_equilibrium_constants(ΔG0_range, equilibrium_constants)
-    p = plot(ΔG0_range, equilibrium_constants .* 1e-3, linewidth=2,
-             xlabel="ΔG⁰ (J/mol)", ylabel="Equilibrium Constant K_eq",
+    p = plot(ΔG0_range ./ 1000, equilibrium_constants, linewidth=2,
+             xlabel="ΔG⁰ (kJ/mol)", ylabel="Equilibrium Constant K_eq",
              title="Equilibrium Constants vs. Standard Gibbs Free Energy",
-             )
-    
+             yscale=:log10)
     return p
 end
 
@@ -76,11 +75,11 @@ end
 # Function to plot reaction fluxes
 function plot_fluxes(fluxes, sol)
     p = plot(sol.t, 
-        [fluxes["A→B"] fluxes["B→A"] fluxes["B→C"] fluxes["C→B"] fluxes["A→C"] fluxes["C→A"]],
+        [fluxes["A+E1→AE1"] fluxes["AE1→A"] fluxes["AE1→B"] fluxes["B+E2→BE2"] fluxes["BE2→B"] fluxes["BE2→C"]],
         xlabel="Time",
         ylabel="Flux",
         title="Reaction Fluxes",
-        label=["A→B" "B→A" "B→C" "C→B" "A→C" "C→A"],
+        label=["A+E1→AE1" "AE1→A" "AE1→B" "B+E2→BE2" "BE2→B" "BE2→C"],
         linewidth=2
     )
     return p
