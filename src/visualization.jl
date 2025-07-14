@@ -62,7 +62,7 @@ using Plots
 
 # Function to plot concentration profiles
 function plot_concentrations(sol)
-    p = plot(sol, 
+    p = plot(sol.t, [sol[A] sol[B] sol[C]],
         xlabel="Time", 
         ylabel="Concentration",
         title="Concentration Profiles",
@@ -72,14 +72,13 @@ function plot_concentrations(sol)
     return p
 end
 
-# Function to plot reaction fluxes
-function plot_fluxes(fluxes, sol)
-    p = plot(sol.t, 
-        [fluxes["A+E1→AE1"] fluxes["AE1→A"] fluxes["AE1→B"] fluxes["B+E2→BE2"] fluxes["BE2→B"] fluxes["BE2→C"]],
+# Function to plot reaction fluxes (now only v1, v2)
+function plot_fluxes(v1, v2, sol)
+    p = plot(sol.t, [v1 v2],
         xlabel="Time",
         ylabel="Flux",
         title="Reaction Fluxes",
-        label=["A+E1→AE1" "AE1→A" "AE1→B" "B+E2→BE2" "BE2→B" "BE2→C"],
+        label=["v₁ (A→B)" "v₂ (B→C)"],
         linewidth=2
     )
     return p
@@ -87,9 +86,7 @@ end
 
 # Function to plot phase portrait
 function plot_phase_portrait(sol)
-    # Set plotly as the backend for interactive 3D plots
     plotly()
-    
     p = plot(sol[A], sol[B], sol[C],
         xlabel="[A]",
         ylabel="[B]",
@@ -97,15 +94,51 @@ function plot_phase_portrait(sol)
         title="Phase Portrait",
         label="Trajectory",
         linewidth=2,
-        camera=(30, 30),  # Set initial camera angle
+        camera=(30, 30),
         legend=:topright
     )
-    
-    # Add markers at start and end points
     scatter!([sol[A][1]], [sol[B][1]], [sol[C][1]], 
              label="Start", markersize=4, color=:green)
     scatter!([sol[A][end]], [sol[B][end]], [sol[C][end]], 
              label="End", markersize=4, color=:red)
-    
+    return p
+end 
+
+function steady_state_thermo_fluxes(A, B, C, E_tot, k1f, k1r, k2f, k2r, ΔG1_std, R, T)
+    expG = exp(ΔG1_std / (R * T))
+    num = k1f * k2f * A * E_tot * (1 - expG * B / A)
+    denom = (k1r + k2f + k1f * A) * (1 + (k2f / k1r) * expG * B / A)
+    return num / denom
+end 
+
+# Plot all species concentrations (A, B, C, E1, AE1, E2, BE2)
+function plot_all_concentrations(sol)
+    p = plot(sol.t, [sol[A] sol[B] sol[C] sol[E1] sol[AE1] sol[E2] sol[BE2]],
+        xlabel="Time", ylabel="Concentration",
+        title="All Species Concentrations",
+        label=["A" "B" "C" "E1" "AE1" "E2" "BE2"],
+        linewidth=2)
+    return p
+end
+
+# Plot fluxes V1, V2 over time
+default(; legend=:topright)
+function plot_fluxes_time(v1, v2, t)
+    p = plot(t, [v1 v2], xlabel="Time", ylabel="Flux",
+        title="Fluxes V₁, V₂", label=["V₁" "V₂"], linewidth=2)
+    return p
+end
+
+# Plot ΔG1, ΔG2 over time
+function plot_dG_time(dG1, dG2, t)
+    p = plot(t, [dG1 dG2], xlabel="Time", ylabel="ΔG (J/mol)",
+        title="Reaction Free Energy Changes", label=["ΔG₁" "ΔG₂"], linewidth=2)
+    return p
+end
+
+# Plot R1, R2 (forward/reverse flux ratio) over time
+function plot_R_time(R1, R2, t)
+    p = plot(t, [R1 R2], xlabel="Time", ylabel="J⁺/J⁻",
+        title="Forward/Reverse Flux Ratio", label=["R₁" "R₂"], linewidth=2, yscale=:log10)
     return p
 end 
