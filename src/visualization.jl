@@ -85,24 +85,24 @@ function plot_fluxes(v1, v2, sol)
 end
 
 # Function to plot phase portrait
-function plot_phase_portrait(sol)
-    plotly()
-    p = plot(sol[A], sol[B], sol[C],
-        xlabel="[A]",
-        ylabel="[B]",
-        zlabel="[C]",
-        title="Phase Portrait",
-        label="Trajectory",
-        linewidth=2,
-        camera=(30, 30),
-        legend=:topright
-    )
-    scatter!([sol[A][1]], [sol[B][1]], [sol[C][1]], 
-             label="Start", markersize=4, color=:green)
-    scatter!([sol[A][end]], [sol[B][end]], [sol[C][end]], 
-             label="End", markersize=4, color=:red)
-    return p
-end 
+# function plot_phase_portrait(sol)
+#     plotly()
+#     p = plot(sol[A], sol[B], sol[C],
+#         xlabel="[A]",
+#         ylabel="[B]",
+#         zlabel="[C]",
+#         title="Phase Portrait",
+#         label="Trajectory",
+#         linewidth=2,
+#         camera=(30, 30),
+#         legend=:topright
+#     )
+#     scatter!([sol[A][1]], [sol[B][1]], [sol[C][1]], 
+#              label="Start", markersize=4, color=:green)
+#     scatter!([sol[A][end]], [sol[B][end]], [sol[C][end]], 
+#              label="End", markersize=4, color=:red)
+#     return p
+# end 
 
 function steady_state_thermo_fluxes(A, B, C, E_tot, k1f, k1r, k2f, k2r, ΔG1_std, R, T)
     expG = exp(ΔG1_std / (R * T))
@@ -138,7 +138,10 @@ end
 
 # Plot R1, R2 (forward/reverse flux ratio) over time
 function plot_R_time(R1, R2, t)
-    p = plot(t, [R1 R2], xlabel="Time", ylabel="J⁺/J⁻",
+    # 过滤掉非正数，避免 log10 报错
+    R1_plot = max.(R1, 1e-12)
+    R2_plot = max.(R2, 1e-12)
+    p = plot(t, [R1_plot R2_plot], xlabel="Time", ylabel="J⁺/J⁻",
         title="Forward/Reverse Flux Ratio", label=["R₁" "R₂"], linewidth=2, yscale=:log10)
     return p
 end 

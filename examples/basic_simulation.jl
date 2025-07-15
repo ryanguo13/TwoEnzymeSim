@@ -24,9 +24,9 @@ savefig(p3, "dG_time.png")
 savefig(p4, "R_time.png")
 
 # Create 3D plot with Plotly backend
-plotly()
-p5 = plot_phase_portrait(sol)
-savefig(p5, "phase_portrait.html")
+# plotly()
+# p5 = plot_phase_portrait(sol)
+# savefig(p5, "phase_portrait.html")
 
 # Create equilibrium constants plot
 ΔG0_range = -40000:10:40000  # -40 kJ/mol 到 +40 kJ/mol
