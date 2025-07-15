@@ -54,7 +54,7 @@ function plot_equilibrium_constants(ΔG0_range, equilibrium_constants)
     p = plot(ΔG0_range ./ 1000, equilibrium_constants, linewidth=2,
              xlabel="ΔG⁰ (kJ/mol)", ylabel="Equilibrium Constant K_eq",
              title="Equilibrium Constants vs. Standard Gibbs Free Energy",
-             yscale=:log10)
+             )
     return p
 end
 
