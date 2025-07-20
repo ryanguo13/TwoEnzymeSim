@@ -82,17 +82,23 @@ function calculate_thermo_fluxes(sol, params; T=298.15)
     # A + E1 <=> AE1 <=> B + E1
     K_eq1 = (k1f * k2f) / (k1r * k2r)
     ΔG1_std = -R * T * log(K_eq1)
-    Q1 = (B .* E1) ./ (A .* E1 .+ 1e-12)
+    Q1 = B ./ A 
     ΔG1 = ΔG1_std .+ R * T * log.(Q1)
 
     # B + E2 <=> BE2 <=> C + E2
     K_eq2 = (k3f * k4f) / (k3r * k4r)
     ΔG2_std = -R * T * log(K_eq2)
-    Q2 = (C .* E2) ./ (B .* E2 .+ 1e-12)
+    Q2 = C ./ B
     ΔG2 = ΔG2_std .+ R * T * log.(Q2)
 
-    v1_thermo = k2f * AE1 .- k2r * B .* E1
-    v2_thermo = k4f * BE2 .- k4r * C .* E2
+    # using the relationship that Keq = exp(-ΔG/RT), using the right side of the equation to be the thermodynamic flux
+    # replace the equilibrium_constants to be the exp(-ΔG/RT) part
+    # v1 is from the function calculate_kinetic_fluxes
+    v1 = calculate_kinetic_fluxes(sol, params)["v1"]
+    # v2 is from the function calculate_kinetic_fluxes
+    v2 = calculate_kinetic_fluxes(sol, params)["v2"]
+    v1_thermo = v1 .* exp.(-ΔG1 ./ (R * T))
+    v2_thermo = v2 .* exp.(-ΔG2 ./ (R * T))
 
     # Forward/reverse flux ratios
     J1_plus = k2f * AE1

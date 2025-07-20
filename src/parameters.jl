@@ -9,7 +9,7 @@ params = Dict(
     :k3f    => 1.2,      # B + E2 -> BE2
     :k3r    => 1.0,      # BE2 -> B + E2
     :k4f    => 1.6,      # BE2 -> C + E2
-    :k4r    => 0.8       # C + E2 -> BE2
+    :k4r    => 0.8,      # C + E2 -> BE2
 )
 
 # Initial conditions
@@ -22,6 +22,10 @@ initial_conditions = [
     AE1  => 0.0,
     BE2  => 0.0
 ]
+
+
+ΔG0_range = -80000:10:40000  # -80 kJ/mol 到 +40 kJ/mol
+
 
 # Time span
 tspan = (0.0, 5.0) 

@@ -1,34 +1,3 @@
-"""
-    plot_results(sol, v1_time, v2_time, steady_sol)
-
-Plot the simulation results including concentrations, fluxes, and phase space.
-"""
-function plot_results(sol, v1_time, v2_time, steady_sol)
-    # Plot concentrations over time
-    p1 = plot(sol.t, sol[A], label="[A]", linewidth=2, 
-              xlabel="Time (s)", ylabel="Concentration (M)", 
-              title="Chemical Species Concentration")
-    plot!(p1, sol.t, sol[B], label="[B]", linewidth=2)
-    plot!(p1, sol.t, sol[C], label="[C]", linewidth=2)
-
-    # Plot reaction fluxes over time
-    p2 = plot(sol.t, v1_time, label="v₁ (A→B)", linewidth=2,
-              xlabel="Time (s)", ylabel="Reaction Flux (M/s)",
-              title="Reaction Fluxes")
-    plot!(p2, sol.t, v2_time, label="v₂ (B→C)", linewidth=2)
-
-    # Plot phase space
-    p3 = plot(sol[A], sol[B], label="A-B Phase Space", linewidth=2,
-              xlabel="[A] (M)", ylabel="[B] (M)",
-              title="System Phase Space")
-    plot!(p3, sol[B], sol[C], label="B-C Phase Space", linewidth=2)
-    
-    # Mark steady state point
-    scatter!(p3, [steady_sol[A]], [steady_sol[B]], 
-             markersize=8, color=:red, label="Steady State")
-
-    return p1, p2, p3
-end
 
 """
     plot_parameter_sensitivity(param_range, steady_vals, param_name)
@@ -55,6 +24,7 @@ function plot_equilibrium_constants(ΔG0_range, equilibrium_constants)
              xlabel="ΔG⁰ (kJ/mol)", ylabel="Equilibrium Constant K_eq",
              title="Equilibrium Constants vs. Standard Gibbs Free Energy",
              )
+    # plot!([K_eq1], [K_eq2], label="K_eq1 and K_eq2", markersize=8, color=:red)
     return p
 end
 
@@ -84,27 +54,25 @@ function plot_fluxes(v1, v2, sol)
     return p
 end
 
-# Function to plot phase portrait
-# function plot_phase_portrait(sol)
-#     plotly()
-#     p = plot(sol[A], sol[B], sol[C],
-#         xlabel="[A]",
-#         ylabel="[B]",
-#         zlabel="[C]",
-#         title="Phase Portrait",
-#         label="Trajectory",
-#         linewidth=2,
-#         camera=(30, 30),
-#         legend=:topright
-#     )
-#     scatter!([sol[A][1]], [sol[B][1]], [sol[C][1]], 
-#              label="Start", markersize=4, color=:green)
-#     scatter!([sol[A][end]], [sol[B][end]], [sol[C][end]], 
-#              label="End", markersize=4, color=:red)
-#     return p
-# end 
 
-function steady_state_thermo_fluxes(A, B, C, E_tot, k1f, k1r, k2f, k2r, ΔG1_std, R, T)
+function plot_thermo_fluxes(sol, params)
+    R = 8.314
+    T = 298.15
+    # using the reuslt of the calculate_thermo_fluxes
+    thermo = calculate_thermo_fluxes(sol, params)
+    p = plot(sol.t, [thermo["v1_thermo"] thermo["v2_thermo"]],
+        xlabel="Time",
+        ylabel="Flux",
+        title="Thermodynamic Fluxes/Dissipation Energy",
+        label=["v₁ (A→B)" "v₂ (B→C)"],
+        linewidth=2
+    )
+    return p
+end
+
+function steady_state_thermo_fluxes(A, B, C, E_tot, k1f, k1r, k2f, k2r, ΔG1_std)
+    R = 8.314
+    T = 298.15
     expG = exp(ΔG1_std / (R * T))
     num = k1f * k2f * A * E_tot * (1 - expG * B / A)
     denom = (k1r + k2f + k1f * A) * (1 + (k2f / k1r) * expG * B / A)
@@ -137,11 +105,66 @@ function plot_dG_time(dG1, dG2, t)
 end
 
 # Plot R1, R2 (forward/reverse flux ratio) over time
-function plot_R_time(R1, R2, t)
-    # 过滤掉非正数，避免 log10 报错
+function plot_R_time(R1, R2, t)  
     R1_plot = max.(R1, 1e-12)
     R2_plot = max.(R2, 1e-12)
     p = plot(t, [R1_plot R2_plot], xlabel="Time", ylabel="J⁺/J⁻",
         title="Forward/Reverse Flux Ratio", label=["R₁" "R₂"], linewidth=2, yscale=:log10)
     return p
-end 
+end
+
+# Plot the derivative of the thermodynamic fluxes over time
+function plot_derivative_thermo_fluxes(sol, params)
+    thermo = calculate_thermo_fluxes(sol, params)
+    # calculate the derivative of the thermodynamic fluxes
+    dG_diss_1 = thermo["ΔG1"] 
+    dG_diss_2 = thermo["ΔG2"]
+    dG_diss_dt_1 = diff(dG_diss_1) ./ diff(sol.t)
+    dG_diss_dt_2 = diff(dG_diss_2) ./ diff(sol.t)
+    p = plot(sol.t[2:end], dG_diss_dt_1, xlabel="Time", ylabel="dG_diss/dt",
+        title="Derivative of Thermodynamic Fluxes (dG_diss)/dt", label=["ΔG_diss₁"], linewidth=2)
+    plot!(p, sol.t[2:end], dG_diss_dt_2, label=["ΔG_diss₂"], linewidth=2)
+    
+    # Find zero-crossing points (where derivative changes sign)
+    # For ΔG_diss₁
+    zero_crossings_1 = findall(diff(sign.(dG_diss_dt_1)) .!= 0)
+    # For ΔG_diss₂  
+    zero_crossings_2 = findall(diff(sign.(dG_diss_dt_2)) .!= 0)
+    
+    # Plot zero-crossing points
+    if !isempty(zero_crossings_1)
+        scatter!(p, sol.t[zero_crossings_1 .+ 1], zeros(length(zero_crossings_1)), 
+                label="Zero Crossing ΔG₁", markersize=6, color=:red, marker=:circle)
+    end
+    if !isempty(zero_crossings_2)
+        scatter!(p, sol.t[zero_crossings_2 .+ 1], zeros(length(zero_crossings_2)), 
+                label="Zero Crossing ΔG₂", markersize=6, color=:blue, marker=:diamond)
+    end
+    
+    # Also find points where both derivatives are close to zero (steady state)
+    tolerance = 1e-6 * maximum(abs.(dG_diss_dt_1))
+    steady_state_points = findall(abs.(dG_diss_dt_1) .< tolerance .&& abs.(dG_diss_dt_2) .< tolerance)
+    
+    if !isempty(steady_state_points)
+        scatter!(p, sol.t[steady_state_points .+ 1], zeros(length(steady_state_points)), 
+                label="Steady State", markersize=8, color=:green, marker=:star)
+    end
+    # Also show the value of the dG_diss_1 and dG_diss_2 at the zero-crossing points using arrow with text using eachindex 
+    # keep some distance between the text and the point
+    # using the distance 100
+    for i in eachindex(zero_crossings_1)
+        annotate!(p, sol.t[zero_crossings_1[i] .+ 1], dG_diss_1[zero_crossings_1[i] .+ 1], 
+                text("ΔG₁ = $(dG_diss_1[zero_crossings_1[i] .+ 1])", 10, :red)) # using the font size 10 and the color red
+        # using quiver! to show the arrow
+        quiver!(p, sol.t[zero_crossings_1[i] .+ 1], dG_diss_1[zero_crossings_1[i] .+ 1], 
+                quiver=([0, 100], [0, 0]), color=:red)
+    end
+    for i in eachindex(zero_crossings_2)
+        annotate!(p, sol.t[zero_crossings_2[i] .+ 1], dG_diss_2[zero_crossings_2[i] .+ 1], 
+                text("ΔG₂ = $(dG_diss_2[zero_crossings_2[i] .+ 1])", 10, :blue))
+        quiver!(p, sol.t[zero_crossings_2[i] .+ 1], dG_diss_2[zero_crossings_2[i] .+ 1], 
+                quiver=([0, 100], [0, 0]), color=:blue)
+    end
+    
+    return p
+end
