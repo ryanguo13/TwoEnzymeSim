@@ -1,8 +1,16 @@
 using Plots
+using ProgressMeter
+
 include("../src/simulation.jl")
 include("../src/parameters.jl")
 include("../src/analysis.jl")
 include("../src/visualization.jl")
+
+# Set the progress meter
+@showprogress for i in 1:100
+    sleep(0.01)
+end
+
 
 # Run simulation
 sol = simulate_system(params, initial_conditions, tspan)
@@ -43,7 +51,7 @@ p2 = plot_fluxes_time(thermo["v1_thermo"], thermo["v2_thermo"], sol.t)
 p3 = plot_dG_time(thermo["ΔG1"], thermo["ΔG2"], sol.t)
 p4 = plot_R_time(thermo["R1"], thermo["R2"], sol.t)
 # p5 = steady_state_thermo_fluxes(sol[A], sol[B], sol[C], sol[E1], params[:k1f], params[:k1r], params[:k2f], params[:k2r], params[:ΔG1], params[:R], params[:T])
-p7 = plot_thermo_fluxes(sol, params)
+# p7 = plot_thermo_fluxes(sol, params)
 p8 = plot_derivative_thermo_fluxes(sol, params)
 # Save all 2D plots
 savefig(p1, "all_concentrations.png")
@@ -51,7 +59,7 @@ savefig(p2, "fluxes_time.png")
 savefig(p3, "dG_time.png")
 savefig(p4, "R_time.png")
 # savefig(p5, "steady_state_thermo_fluxes.png")
-savefig(p7, "thermo_fluxes.png")
+# savefig(p7, "thermo_fluxes.png")
 savefig(p8, "derivative_thermo_fluxes.png")
 
 _, equilibrium_constants = analyze_equilibrium_constants(ΔG0_range)

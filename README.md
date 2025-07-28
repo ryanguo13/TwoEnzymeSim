@@ -23,6 +23,7 @@ julia> Pkg.add([
     "Plots",
     "PlotlyBase"
     "GR"
+    "ProgressMeter"
 ])
 ```
 

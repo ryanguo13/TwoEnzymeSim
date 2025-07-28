@@ -15,8 +15,8 @@ params = Dict(
 # Initial conditions
 initial_conditions = [
     A    => 5.0,
-    B    => 2.0,
-    C    => 1.0,
+    B    => 0.0,
+    C    => 0.0,
     E1   => 20.0,   # All enzyme free at t=0
     E2   => 15.0,
     AE1  => 0.0,
