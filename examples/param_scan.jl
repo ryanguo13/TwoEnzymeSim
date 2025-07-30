@@ -20,6 +20,14 @@ k3r_range = 0.1:0.5:10.0  # 20 points
 k4f_range = 0.1:0.5:10.0  # 20 points
 k4r_range = 0.1:0.5:10.0  # 20 points
 
+
+A_range = 5.0:0.5:20.0
+B_range = 0.0:0.5:5.0
+C_range = 0.0:0.5:5.0
+E1_range = 5.0:0.5:20.0
+E2_range = 5.0:0.5:20.0
+
+
 # Create a grid of parameters (only reaction rate constants)
 param_grid = Iterators.product(
     k1f_range, k1r_range, k2f_range, k2r_range, k3f_range, k3r_range,
