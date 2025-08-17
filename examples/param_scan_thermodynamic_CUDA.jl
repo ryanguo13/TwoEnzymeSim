@@ -6,12 +6,15 @@ using CUDA
 using LinearAlgebra
 using DifferentialEquations
 using DiffEqGPU
+using Printf
 # include("../src/parameters.jl")
 include("../src/simulation.jl")
 include("../src/visualization.jl")
 
-# Define the parameters of the reaction rate iteration range
-# Use fewer points to cover the full range
+# Define the parameters with thermodynamic constraints
+# Keep all reaction rate constants but add equilibrium constraints
+
+# All reaction rate constants (including reverse rates)
 k1f_range = 0.1:0.5:10.0  # 20 points
 k1r_range = 0.1:0.5:10.0  # 20 points
 k2f_range = 0.1:0.5:10.0  # 20 points
@@ -21,24 +24,529 @@ k3r_range = 0.1:0.5:10.0  # 20 points
 k4f_range = 0.1:0.5:10.0  # 20 points
 k4r_range = 0.1:0.5:10.0  # 20 points
 
-
+# Initial concentrations
 A_range = 5.0:0.5:20.0
 B_range = 0.0:0.5:5.0
 C_range = 0.0:0.5:5.0
 E1_range = 5.0:0.5:20.0
 E2_range = 5.0:0.5:20.0
 
-# Create a grid of parameters (only reaction rate constants)
-param_grid = Iterators.product(
-    k1f_range, k1r_range, k2f_range, k2r_range, k3f_range, k3r_range,
-    k4f_range, k4r_range, A_range, B_range, C_range, E1_range, E2_range
-)
+# Progress bar function (defined early for use in parameter generation)
+function print_progress_bar(current, total, width=50, prefix="Progress")
+    percentage = current / total
+    filled = round(Int, width * percentage)
+    bar = "█" * "█"^filled * "░"^(width - filled)
+    @printf("%s: [%s] %3.1f%% (%d/%d)\r", prefix, bar, percentage * 100, current, total)
+    flush(stdout)
+end
+
+# Ultra-efficient vectorized parameter generation using mathematical optimization
+function generate_thermodynamic_parameters_vectorized()
+    println("Generating parameters with thermodynamic constraints (vectorized version)...")
+    
+    # Pre-calculate all parameter ranges as arrays
+    k1f_array = collect(k1f_range)
+    k1r_array = collect(k1r_range)
+    k2f_array = collect(k2f_range)
+    k2r_array = collect(k2r_range)
+    k3f_array = collect(k3f_range)
+    k3r_array = collect(k3r_range)
+    k4f_array = collect(k4f_range)
+    k4r_array = collect(k4r_range)
+    A_array = collect(A_range)
+    B_array = collect(B_range)
+    C_array = collect(C_range)
+    E1_array = collect(E1_range)
+    E2_array = collect(E2_range)
+    
+    # Calculate total combinations
+    total_combinations = length(k1f_array) * length(k1r_array) * length(k2f_array) * length(k2r_array) * 
+                        length(k3f_array) * length(k3r_array) * length(k4f_array) * length(k4r_array) *
+                        length(A_array) * length(B_array) * length(C_array) * length(E1_array) * length(E2_array)
+    
+    println("Total possible combinations: $total_combinations")
+    
+    # Step 1: Use mathematical optimization to pre-filter rate constants
+    println("Step 1: Pre-filtering rate constants using mathematical constraints...")
+    
+    # Create all rate constant combinations efficiently
+    rate_combinations_raw = collect(Iterators.product(
+        k1f_array, k1r_array, k2f_array, k2r_array, k3f_array, k3r_array, k4f_array, k4r_array
+    ))
+    
+    # Vectorized thermodynamic constraint checking
+    println("Applying thermodynamic constraints...")
+    
+    # Convert to arrays for vectorized operations
+    rate_array = hcat([collect(Float64.(rate_params)) for rate_params in rate_combinations_raw]...)
+    
+    # Vectorized calculation of equilibrium constants
+    k1f_vec = rate_array[1, :]
+    k1r_vec = rate_array[2, :]
+    k2f_vec = rate_array[3, :]
+    k2r_vec = rate_array[4, :]
+    k3f_vec = rate_array[5, :]
+    k3r_vec = rate_array[6, :]
+    k4f_vec = rate_array[7, :]
+    k4r_vec = rate_array[8, :]
+    
+    # Vectorized equilibrium constant calculations
+    Keq1_vec = (k1f_vec .* k2f_vec) ./ (k1r_vec .* k2r_vec)
+    Keq2_vec = (k3f_vec .* k4f_vec) ./ (k3r_vec .* k4r_vec)
+    
+    # Vectorized constraint checking
+    valid_mask = (0.1 .<= Keq1_vec .<= 10.0) .&& (0.1 .<= Keq2_vec .<= 10.0)
+    valid_indices = findall(valid_mask)
+    
+    # Extract valid rate combinations
+    rate_combinations = [rate_combinations_raw[i] for i in valid_indices]
+    
+    println("Valid rate constant combinations: $(length(rate_combinations))")
+    println("Reduction factor: $(round(length(rate_combinations_raw) / length(rate_combinations), digits=2))x")
+    
+    # Step 2: Generate concentration combinations
+    conc_combinations = collect(Iterators.product(A_array, B_array, C_array, E1_array, E2_array))
+    println("Concentration combinations: $(length(conc_combinations))")
+    
+    # Step 3: Efficient combination using pre-allocated arrays
+    println("Step 2: Combining rate and concentration combinations (vectorized)...")
+    
+    total_final_combinations = length(rate_combinations) * length(conc_combinations)
+    println("Final parameter combinations: $total_final_combinations")
+    
+    # Pre-allocate result array for maximum efficiency
+    params = Vector{NTuple{13, Float64}}(undef, total_final_combinations)
+    
+    # Use vectorized operations for combination
+    counter = 0
+    for (i, rate_params) in enumerate(rate_combinations)
+        for (j, conc_params) in enumerate(conc_combinations)
+            counter += 1
+            
+            # Show progress every 100000 combinations
+            if counter % 100000 == 0 || counter == total_final_combinations
+                print_progress_bar(counter, total_final_combinations, 40, "Vectorized Combining")
+            end
+            
+            # Direct assignment to pre-allocated array
+            params[counter] = (rate_params..., conc_params...)
+        end
+    end
+    
+    println()  # New line after progress bar
+    
+    return params
+end
+
+# Memory-efficient streaming version for very large parameter spaces
+function generate_thermodynamic_parameters_streaming()
+    println("Generating parameters with thermodynamic constraints (streaming version)...")
+    
+    # Pre-calculate all parameter ranges as arrays
+    k1f_array = collect(k1f_range)
+    k1r_array = collect(k1r_range)
+    k2f_array = collect(k2f_range)
+    k2r_array = collect(k2r_range)
+    k3f_array = collect(k3f_range)
+    k3r_array = collect(k3r_range)
+    k4f_array = collect(k4f_range)
+    k4r_array = collect(k4r_range)
+    A_array = collect(A_range)
+    B_array = collect(B_range)
+    C_array = collect(C_range)
+    E1_array = collect(E1_range)
+    E2_array = collect(E2_range)
+    
+    # Calculate total combinations
+    total_combinations = length(k1f_array) * length(k1r_array) * length(k2f_array) * length(k2r_array) * 
+                        length(k3f_array) * length(k3r_array) * length(k4f_array) * length(k4r_array) *
+                        length(A_array) * length(B_array) * length(C_array) * length(E1_array) * length(E2_array)
+    
+    println("Total possible combinations: $total_combinations")
+    
+    # Use streaming approach to avoid memory issues
+    println("Step 1: Streaming rate constant generation...")
+    
+    # Create a streaming iterator for rate constants
+    rate_stream = Iterators.product(
+        k1f_array, k1r_array, k2f_array, k2r_array, k3f_array, k3r_array, k4f_array, k4r_array
+    )
+    
+    # Stream and filter rate combinations
+    rate_combinations = []
+    rate_counter = 0
+    total_rate_combinations = length(k1f_array) * length(k1r_array) * length(k2f_array) * length(k2r_array) *
+                             length(k3f_array) * length(k3r_array) * length(k4f_array) * length(k4r_array)
+    
+    for rate_params in rate_stream
+        rate_counter += 1
+        
+        # Show progress every 100000 combinations
+        if rate_counter % 100000 == 0 || rate_counter == total_rate_combinations
+            print_progress_bar(rate_counter, total_rate_combinations, 40, "Rate Streaming")
+        end
+        
+        k1f, k1r, k2f, k2r, k3f, k3r, k4f, k4r = rate_params
+        
+        # Check thermodynamic constraints
+        Keq1 = (k1f * k2f) / (k1r * k2r)
+        Keq2 = (k3f * k4f) / (k3r * k4r)
+        
+        # Apply thermodynamic constraints
+        if 0.1 <= Keq1 <= 10.0 && 0.1 <= Keq2 <= 10.0
+            push!(rate_combinations, rate_params)
+        end
+    end
+    
+    println()  # New line after progress bar
+    println("Valid rate constant combinations: $(length(rate_combinations))")
+    
+    # Generate concentration combinations
+    conc_combinations = collect(Iterators.product(A_array, B_array, C_array, E1_array, E2_array))
+    println("Concentration combinations: $(length(conc_combinations))")
+    
+    # Stream the final combinations
+    println("Step 2: Streaming final combinations...")
+    
+    # Use a streaming approach for the final combination
+    params = []
+    total_final_combinations = length(rate_combinations) * length(conc_combinations)
+    counter = 0
+    
+    for rate_params in rate_combinations
+        for conc_params in conc_combinations
+            counter += 1
+            
+            # Show progress every 100000 combinations
+            if counter % 100000 == 0 || counter == total_final_combinations
+                print_progress_bar(counter, total_final_combinations, 40, "Final Streaming")
+            end
+            
+            combined_params = (rate_params..., conc_params...)
+            push!(params, combined_params)
+        end
+    end
+    
+    println()  # New line after progress bar
+    
+    return params
+end
+
+# Function to generate parameters with thermodynamic constraints - OPTIMIZED VERSION
+function generate_thermodynamic_parameters_optimized()
+    println("Generating parameters with thermodynamic constraints (optimized version)...")
+    
+    # Pre-calculate all parameter ranges as arrays for vectorized operations
+    k1f_array = collect(k1f_range)
+    k1r_array = collect(k1r_range)
+    k2f_array = collect(k2f_range)
+    k2r_array = collect(k2r_range)
+    k3f_array = collect(k3f_range)
+    k3r_array = collect(k3r_range)
+    k4f_array = collect(k4f_range)
+    k4r_array = collect(k4r_range)
+    A_array = collect(A_range)
+    B_array = collect(B_range)
+    C_array = collect(C_range)
+    E1_array = collect(E1_range)
+    E2_array = collect(E2_range)
+    
+    # Calculate total combinations for progress tracking
+    total_combinations = length(k1f_array) * length(k1r_array) * length(k2f_array) * length(k2r_array) * 
+                        length(k3f_array) * length(k3r_array) * length(k4f_array) * length(k4r_array) *
+                        length(A_array) * length(B_array) * length(C_array) * length(E1_array) * length(E2_array)
+    
+    println("Total possible combinations: $total_combinations")
+    
+    # Use vectorized operations to generate all combinations efficiently
+    # We'll use a more efficient approach by pre-filtering based on thermodynamic constraints
+    
+    # Step 1: Generate all rate constant combinations first
+    rate_combinations = []
+    rate_counter = 0
+    total_rate_combinations = length(k1f_array) * length(k1r_array) * length(k2f_array) * length(k2r_array) *
+                             length(k3f_array) * length(k3r_array) * length(k4f_array) * length(k4r_array)
+    
+    println("Step 1: Generating rate constant combinations...")
+    
+    for (k1f, k1r, k2f, k2r, k3f, k3r, k4f, k4r) in Iterators.product(
+        k1f_array, k1r_array, k2f_array, k2r_array, k3f_array, k3r_array, k4f_array, k4r_array
+    )
+        rate_counter += 1
+        
+        # Show progress every 100000 combinations
+        if rate_counter % 100000 == 0 || rate_counter == total_rate_combinations
+            print_progress_bar(rate_counter, total_rate_combinations, 40, "Rate Constants")
+        end
+        
+        # Check thermodynamic constraints
+        Keq1 = (k1f * k2f) / (k1r * k2r)
+        Keq2 = (k3f * k4f) / (k3r * k4r)
+        
+        # Apply thermodynamic constraints
+        if 0.1 <= Keq1 <= 10.0 && 0.1 <= Keq2 <= 10.0
+            push!(rate_combinations, (k1f, k1r, k2f, k2r, k3f, k3r, k4f, k4r))
+        end
+    end
+    
+    println()  # New line after progress bar
+    println("Valid rate constant combinations: $(length(rate_combinations))")
+    
+    # Step 2: Generate concentration combinations
+    conc_combinations = []
+    for (A0, B0, C0, E1_0, E2_0) in Iterators.product(A_array, B_array, C_array, E1_array, E2_array)
+        push!(conc_combinations, (A0, B0, C0, E1_0, E2_0))
+    end
+    
+    println("Concentration combinations: $(length(conc_combinations))")
+    
+    # Step 3: Combine rate and concentration combinations efficiently
+    println("Step 2: Combining rate and concentration combinations...")
+    
+    # Pre-allocate result array with estimated size
+    estimated_size = length(rate_combinations) * length(conc_combinations)
+    params = Vector{NTuple{13, Float64}}(undef, 0)
+    sizehint!(params, estimated_size)
+    
+    total_combinations = length(rate_combinations) * length(conc_combinations)
+    counter = 0
+    
+    for rate_params in rate_combinations
+        for conc_params in conc_combinations
+            counter += 1
+            
+            # Show progress every 100000 combinations
+            if counter % 100000 == 0 || counter == total_combinations
+                print_progress_bar(counter, total_combinations, 40, "Combining")
+            end
+            
+            # Combine rate and concentration parameters
+            combined_params = (rate_params..., conc_params...)
+            push!(params, combined_params)
+        end
+    end
+    
+    println()  # New line after progress bar
+    
+    return params
+end
+
+# Alternative optimized version using parallel processing
+function generate_thermodynamic_parameters_parallel()
+    println("Generating parameters with thermodynamic constraints (parallel version)...")
+    
+    # Pre-calculate all parameter ranges as arrays
+    k1f_array = collect(k1f_range)
+    k1r_array = collect(k1r_range)
+    k2f_array = collect(k2f_range)
+    k2r_array = collect(k2r_range)
+    k3f_array = collect(k3f_range)
+    k3r_array = collect(k3r_range)
+    k4f_array = collect(k4f_range)
+    k4r_array = collect(k4r_range)
+    A_array = collect(A_range)
+    B_array = collect(B_range)
+    C_array = collect(C_range)
+    E1_array = collect(E1_range)
+    E2_array = collect(E2_range)
+    
+    # Calculate total combinations
+    total_combinations = length(k1f_array) * length(k1r_array) * length(k2f_array) * length(k2r_array) * 
+                        length(k3f_array) * length(k3r_array) * length(k4f_array) * length(k4r_array) *
+                        length(A_array) * length(B_array) * length(C_array) * length(E1_array) * length(E2_array)
+    
+    println("Total possible combinations: $total_combinations")
+    
+    # Use parallel processing for rate constant generation
+    println("Step 1: Generating rate constant combinations (parallel)...")
+    
+    # Create all rate constant combinations
+    rate_combinations = []
+    rate_counter = 0
+    total_rate_combinations = length(k1f_array) * length(k1r_array) * length(k2f_array) * length(k2r_array) *
+                             length(k3f_array) * length(k3r_array) * length(k4f_array) * length(k4r_array)
+    
+    # Use parallel processing for rate constant filtering
+    rate_combinations_raw = collect(Iterators.product(
+        k1f_array, k1r_array, k2f_array, k2r_array, k3f_array, k3r_array, k4f_array, k4r_array
+    ))
+    
+    # Filter rate combinations in parallel
+    rate_combinations = @sync @distributed (vcat) for rate_params in rate_combinations_raw
+        k1f, k1r, k2f, k2r, k3f, k3r, k4f, k4r = rate_params
+        
+        # Check thermodynamic constraints
+        Keq1 = (k1f * k2f) / (k1r * k2r)
+        Keq2 = (k3f * k4f) / (k3r * k4r)
+        
+        # Apply thermodynamic constraints
+        if 0.1 <= Keq1 <= 10.0 && 0.1 <= Keq2 <= 10.0
+            [rate_params]
+        else
+            []
+        end
+    end
+    
+    println("Valid rate constant combinations: $(length(rate_combinations))")
+    
+    # Generate concentration combinations
+    conc_combinations = collect(Iterators.product(A_array, B_array, C_array, E1_array, E2_array))
+    println("Concentration combinations: $(length(conc_combinations))")
+    
+    # Combine in parallel
+    println("Step 2: Combining rate and concentration combinations (parallel)...")
+    
+    # Use parallel processing for final combination
+    params = @sync @distributed (vcat) for rate_params in rate_combinations
+        local_batch = []
+        for conc_params in conc_combinations
+            combined_params = (rate_params..., conc_params...)
+            push!(local_batch, combined_params)
+        end
+        local_batch
+    end
+    
+    return params
+end
+
+# GPU-accelerated parameter generation (for very large parameter spaces)
+function generate_thermodynamic_parameters_gpu()
+    if !CUDA.functional()
+        println("CUDA not available, falling back to CPU version")
+        return generate_thermodynamic_parameters_optimized()
+    end
+    
+    println("Generating parameters with thermodynamic constraints (GPU version)...")
+    
+    # Pre-calculate all parameter ranges as arrays
+    k1f_array = collect(k1f_range)
+    k1r_array = collect(k1r_range)
+    k2f_array = collect(k2f_range)
+    k2r_array = collect(k2r_range)
+    k3f_array = collect(k3f_range)
+    k3r_array = collect(k3r_range)
+    k4f_array = collect(k4f_range)
+    k4r_array = collect(k4r_range)
+    A_array = collect(A_range)
+    B_array = collect(B_range)
+    C_array = collect(C_range)
+    E1_array = collect(E1_range)
+    E2_array = collect(E2_range)
+    
+    # Calculate total combinations
+    total_combinations = length(k1f_array) * length(k1r_array) * length(k2f_array) * length(k2r_array) * 
+                        length(k3f_array) * length(k3r_array) * length(k4f_array) * length(k4r_array) *
+                        length(A_array) * length(B_array) * length(C_array) * length(E1_array) * length(E2_array)
+    
+    println("Total possible combinations: $total_combinations")
+    
+    # Step 1: Generate rate constant combinations on GPU
+    println("Step 1: Generating rate constant combinations (GPU)...")
+    
+    # Create all rate combinations and transfer to GPU
+    rate_combinations_raw = collect(Iterators.product(
+        k1f_array, k1r_array, k2f_array, k2r_array, k3f_array, k3r_array, k4f_array, k4r_array
+    ))
+    
+    # Convert to GPU arrays for parallel processing
+    rate_array = hcat([collect(Float64.(rate_params)) for rate_params in rate_combinations_raw]...)
+    rate_gpu = CuArray{Float64}(rate_array)
+    
+    # GPU kernel for thermodynamic constraint checking
+    function check_thermodynamic_constraints_gpu(rate_gpu)
+        # This would be implemented as a CUDA kernel
+        # For now, we'll use CPU filtering with GPU arrays
+        valid_indices = Int[]
+        
+        for i in 1:size(rate_gpu, 2)
+            k1f, k1r, k2f, k2r, k3f, k3r, k4f, k4r = rate_gpu[:, i]
+            
+            Keq1 = (k1f * k2f) / (k1r * k2r)
+            Keq2 = (k3f * k4f) / (k3r * k4r)
+            
+            if 0.1 <= Keq1 <= 10.0 && 0.1 <= Keq2 <= 10.0
+                push!(valid_indices, i)
+            end
+        end
+        
+        return valid_indices
+    end
+    
+    # Filter rate combinations
+    valid_indices = check_thermodynamic_constraints_gpu(rate_gpu)
+    rate_combinations = [rate_combinations_raw[i] for i in valid_indices]
+    
+    println("Valid rate constant combinations: $(length(rate_combinations))")
+    
+    # Step 2: Generate concentration combinations
+    conc_combinations = collect(Iterators.product(A_array, B_array, C_array, E1_array, E2_array))
+    println("Concentration combinations: $(length(conc_combinations))")
+    
+    # Step 3: Combine efficiently
+    println("Step 2: Combining rate and concentration combinations...")
+    
+    params = Vector{NTuple{13, Float64}}(undef, 0)
+    sizehint!(params, length(rate_combinations) * length(conc_combinations))
+    
+    total_combinations = length(rate_combinations) * length(conc_combinations)
+    counter = 0
+    
+    for rate_params in rate_combinations
+        for conc_params in conc_combinations
+            counter += 1
+            
+            if counter % 100000 == 0 || counter == total_combinations
+                print_progress_bar(counter, total_combinations, 40, "GPU Combining")
+            end
+            
+            combined_params = (rate_params..., conc_params...)
+            push!(params, combined_params)
+        end
+    end
+    
+    println()
+    return params
+end
+
+# Function to generate parameters with thermodynamic constraints
+function generate_thermodynamic_parameters()
+    # Choose the best method based on system capabilities and parameter space size
+    total_combinations = length(k1f_range) * length(k1r_range) * length(k2f_range) * length(k2r_range) * 
+                        length(k3f_range) * length(k3r_range) * length(k4f_range) * length(k4r_range) *
+                        length(A_range) * length(B_range) * length(C_range) * length(E1_range) * length(E2_range)
+    
+    if total_combinations > 10_000_000
+        # For very large parameter spaces, use streaming
+        return generate_thermodynamic_parameters_streaming()
+    elseif total_combinations > 1_000_000
+        # For large parameter spaces, use vectorized approach
+        return generate_thermodynamic_parameters_vectorized()
+    elseif CUDA.functional() && total_combinations > 100_000
+        # For medium-large parameter spaces with GPU available
+        return generate_thermodynamic_parameters_gpu()
+    elseif Threads.nthreads() > 1
+        # For medium parameter spaces with multiple threads
+        return generate_thermodynamic_parameters_parallel()
+    else
+        # For smaller parameter spaces, use optimized sequential approach
+        return generate_thermodynamic_parameters_optimized()
+    end
+end
+
+# Create parameter grid with thermodynamic constraints
+println("Generating parameters with thermodynamic constraints...")
+param_grid = generate_thermodynamic_parameters()
 
 # Calculate total combinations for progress reporting
-total_combinations = length(k1f_range) * length(k1r_range) * length(k2f_range) * length(k2r_range) * 
-                    length(k3f_range) * length(k3r_range) * length(k4f_range) * length(k4r_range) *
-                    length(A_range) * length(B_range) * length(C_range) * length(E1_range) * length(E2_range)
-println("Total parameter combinations: $total_combinations")
+total_combinations = length(param_grid)
+println("Total parameter combinations with thermodynamic constraints: $total_combinations")
+
+# Calculate reduction in parameter space
+original_combinations = length(k1f_range) * length(k1r_range) * length(k2f_range) * length(k2r_range) * 
+                       length(k3f_range) * length(k3r_range) * length(k4f_range) * length(k4r_range) *
+                       length(A_range) * length(B_range) * length(C_range) * length(E1_range) * length(E2_range)
+reduction_factor = original_combinations / total_combinations
+println("Parameter space reduction factor: $(round(reduction_factor, digits=2))x")
 
 
 
@@ -287,6 +795,8 @@ function measure_performance(func, args...; name="Function")
     return result, elapsed
 end
 
+
+
 # CUDA memory management function
 function manage_cuda_memory()
     if CUDA.functional()
@@ -323,8 +833,8 @@ function run_parameter_scan_cuda(param_grid, batch_size=nothing, max_simulations
     # Initialize CUDA memory management
     manage_cuda_memory()
     
-    # Convert iterator to array for easier batching
-    param_array = collect(Iterators.take(param_grid, total_simulations))
+    # Convert array to array for easier batching (param_grid is already an array)
+    param_array = param_grid[1:total_simulations]
     
     # Performance monitoring
     total_start_time = time()
@@ -338,7 +848,8 @@ function run_parameter_scan_cuda(param_grid, batch_size=nothing, max_simulations
         batch_num = div(i-1, batch_size) + 1
         total_batches = div(length(param_array)-1, batch_size) + 1
         
-        println("Processing batch $batch_num/$total_batches ($(length(batch)) simulations)")
+        # Show progress bar
+        print_progress_bar(batch_num, total_batches, 40, "Batch Progress")
         
         # Measure batch processing time
         batch_results, batch_time = measure_performance(
@@ -361,7 +872,7 @@ function run_parameter_scan_cuda(param_grid, batch_size=nothing, max_simulations
         if batch_num % 5 == 0
             elapsed_total = time() - total_start_time
             rate = successful_simulations / elapsed_total
-            println("  Progress: $successful_simulations successful simulations")
+            println("\n  Progress: $successful_simulations successful simulations")
             println("  Rate: $(round(rate, digits=2)) simulations/second")
             println("  Batch $batch_num: $batch_successful successful, $(round(batch_time, digits=3))s")
             
@@ -369,6 +880,9 @@ function run_parameter_scan_cuda(param_grid, batch_size=nothing, max_simulations
             manage_cuda_memory()
         end
     end
+    
+    # Final progress bar update
+    println()  # New line after progress bar
     
     total_time = time() - total_start_time
     println("\n=== Performance Summary ===")
@@ -387,12 +901,13 @@ function run_parameter_scan_cpu_benchmark(param_grid, max_simulations=1000)
     total_start_time = time()
     successful_simulations = 0
     
-    # Convert iterator to array
-    param_array = collect(Iterators.take(param_grid, max_simulations))
+    # Convert array to array (param_grid is already an array)
+    param_array = param_grid[1:min(max_simulations, length(param_grid))]
     
     for (i, params) in enumerate(param_array)
-        if i % 100 == 0
-            println("CPU progress: $i/$max_simulations")
+        # Show progress bar every 10 simulations
+        if i % 10 == 0 || i == length(param_array)
+            print_progress_bar(i, length(param_array), 40, "CPU Progress")
         end
         
         res = simulate_reaction_cpu(params, (0.0, 5.0))
@@ -401,6 +916,9 @@ function run_parameter_scan_cpu_benchmark(param_grid, max_simulations=1000)
             successful_simulations += 1
         end
     end
+    
+    # Final progress bar update
+    println()  # New line after progress bar
     
     total_time = time() - total_start_time
     println("\n=== CPU Benchmark Results ===")
@@ -441,9 +959,13 @@ end
 function ensemble_gpu_scan(param_grid, tspan=(0.0, 5.0); saveat=0.1, max_batch=100000)
     println("Running EnsembleProblem + EnsembleGPUArray GPU batch scan...")
     # 1. 收集参数和初始条件
-    param_array = collect(Iterators.take(param_grid, max_batch))
+    param_array = param_grid[1:min(max_batch, length(param_grid))]
     n = length(param_array)
     println("Total ensemble batch size: $n")
+    
+    # Show progress for parameter preparation
+    print_progress_bar(0, 3, 40, "Ensemble Setup")
+    
     # 2. 构造参数和初始条件数组
     u0s = [
         [A0, B0, C0, E1_0, E2_0, 0.0, 0.0] for (k1f,k1r,k2f,k2r,k3f,k3r,k4f,k4r,A0,B0,C0,E1_0,E2_0) in param_array
@@ -452,6 +974,9 @@ function ensemble_gpu_scan(param_grid, tspan=(0.0, 5.0); saveat=0.1, max_batch=1
         (k1f=k1f, k1r=k1r, k2f=k2f, k2r=k2r, k3f=k3f, k3r=k3r, k4f=k4f, k4r=k4r)
         for (k1f,k1r,k2f,k2r,k3f,k3r,k4f,k4r,A0,B0,C0,E1_0,E2_0) in param_array
     ]
+    
+    print_progress_bar(1, 3, 40, "Ensemble Setup")
+    
     # 3. 定义ODE问题
     function f!(du, u, p, t)
         # 变量顺序: A, B, C, E1, E2, AE1, BE2
@@ -468,21 +993,41 @@ function ensemble_gpu_scan(param_grid, tspan=(0.0, 5.0); saveat=0.1, max_batch=1
     end
     prob = ODEProblem(f!, u0s[1], tspan, ps[1])
     ensemble_prob = EnsembleProblem(prob, prob_func=(prob,i,repeat)->(prob.u0=u0s[i]; prob.p=ps[i]; prob))
+    
+    print_progress_bar(2, 3, 40, "Ensemble Setup")
+    
+    println("\nSolving ensemble with GPU acceleration...")
     sol = solve(ensemble_prob, Tsit5(), EnsembleGPUArray(), trajectories=n, saveat=saveat)
+    
+    print_progress_bar(3, 3, 40, "Ensemble Setup")
+    println()  # New line after progress bar
+    
     # 4. 结果整理
+    println("Processing results...")
     results = []
     for i in 1:n
+        # Show progress every 1000 results
+        if i % 1000 == 0 || i == n
+            print_progress_bar(i, n, 40, "Result Processing")
+        end
+        
         s = sol[i]
         if s.retcode == :Success
             vals = [s[1,end], s[2,end], s[3,end], s[4,end], s[5,end]]
             push!(results, (param_array[i], vals))
         end
     end
+    
+    println()  # New line after progress bar
     return results
 end
 
-# Run the CUDA GPU-accelerated parameter scan
-println("Starting CUDA GPU-accelerated parameter scan...")
+# Run the CUDA GPU-accelerated parameter scan with thermodynamic constraints
+println("Starting CUDA GPU-accelerated parameter scan with thermodynamic constraints...")
+println("Thermodynamic constraints applied:")
+println("  Keq1 = (k1f * k2f) / (k1r * k2r) for reactions 1 and 2 (constrained to 0.1-10.0)")
+println("  Keq2 = (k3f * k4f) / (k3r * k4r) for reactions 3 and 4 (constrained to 0.1-10.0)")
+println("  All reaction rate constants (k1f, k1r, k2f, k2r, k3f, k3r, k4f, k4r) are preserved")
 
 # Check if user wants performance comparison
 if length(ARGS) > 0 && ARGS[1] == "benchmark"
@@ -683,6 +1228,11 @@ end
 
 # Usage instructions
 println("\n=== Usage Instructions ===")
-println("To run performance benchmark: julia param_scan_cuda.jl benchmark")
-println("To run normal parameter scan: julia param_scan_cuda.jl")
-println("To run ensemble GPU scan: julia param_scan_cuda.jl ensemble")
+println("To run performance benchmark: julia param_scan_thermodynamic_CUDA.jl benchmark")
+println("To run normal parameter scan: julia param_scan_thermodynamic_CUDA.jl")
+println("To run ensemble GPU scan: julia param_scan_thermodynamic_CUDA.jl ensemble")
+println("\nThis version includes thermodynamic constraints:")
+println("  - Keq1 = (k1f * k2f) / (k1r * k2r) for reactions 1 and 2")
+println("  - Keq2 = (k3f * k4f) / (k3r * k4r) for reactions 3 and 4")
+println("  - All reaction rate constants are preserved but constrained by equilibrium constants")
+println("  - Parameter space reduced by ~$(round(reduction_factor, digits=1))x")
