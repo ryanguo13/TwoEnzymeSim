@@ -15,21 +15,21 @@ include("../src/visualization.jl")
 # Keep all reaction rate constants but add equilibrium constraints
 
 # All reaction rate constants (including reverse rates)
-k1f_range = 0.1:0.5:10.0  # 20 points
-k1r_range = 0.1:0.5:10.0  # 20 points
-k2f_range = 0.1:0.5:10.0  # 20 points
-k2r_range = 0.1:0.5:10.0  # 20 points
-k3f_range = 0.1:0.5:10.0  # 20 points
-k3r_range = 0.1:0.5:10.0  # 20 points
-k4f_range = 0.1:0.5:10.0  # 20 points
-k4r_range = 0.1:0.5:10.0  # 20 points
+k1f_range = 0.1:4:20.0  # 20 points
+k1r_range = 0.1:4:20.0  # 20 points
+k2f_range = 0.1:4:20.0  # 20 points
+k2r_range = 0.1:4:20.0  # 20 points
+k3f_range = 0.1:4:20.0  # 20 points
+k3r_range = 0.1:4:20.0  # 20 points
+k4f_range = 0.1:4:20.0  # 20 points
+k4r_range = 0.1:4:20.0  # 20 points
 
 # Initial concentrations
-A_range = 5.0:0.5:20.0
-B_range = 0.0:0.5:5.0
-C_range = 0.0:0.5:5.0
-E1_range = 5.0:0.5:20.0
-E2_range = 5.0:0.5:20.0
+A_range = 5.0:4:20.0
+B_range = 0.0:4:5.0
+C_range = 0.0:4:5.0
+E1_range = 5.0:4:20.0
+E2_range = 5.0:4:20.0
 
 # Progress bar function (defined early for use in parameter generation)
 function print_progress_bar(current, total, width=50, prefix="Progress")
@@ -411,7 +411,7 @@ end
 
 # GPU-accelerated parameter generation (for very large parameter spaces)
 function generate_thermodynamic_parameters_gpu()
-    if !CUDA.functional()
+    if !cuda_available || !CUDA.functional()
         println("CUDA not available, falling back to CPU version")
         return generate_thermodynamic_parameters_optimized()
     end
@@ -521,7 +521,7 @@ function generate_thermodynamic_parameters()
     elseif total_combinations > 1_000_000
         # For large parameter spaces, use vectorized approach
         return generate_thermodynamic_parameters_vectorized()
-    elseif CUDA.functional() && total_combinations > 100_000
+    elseif cuda_available && CUDA.functional() && total_combinations > 100_000
         # For medium-large parameter spaces with GPU available
         return generate_thermodynamic_parameters_gpu()
     elseif Threads.nthreads() > 1
@@ -548,20 +548,85 @@ original_combinations = length(k1f_range) * length(k1r_range) * length(k2f_range
 reduction_factor = original_combinations / total_combinations
 println("Parameter space reduction factor: $(round(reduction_factor, digits=2))x")
 
-
-
-# Check CUDA GPU availability
-if CUDA.functional()
-    println("✅ CUDA GPU is available")
-    println("GPU device: $(CUDA.name(CUDA.device()))")
-    println("GPU memory: $(round(CUDA.totalmem(CUDA.device()) / 1024^3, digits=2)) GB")
+# Enhanced CUDA Device Configuration for V100 GPUs
+function configure_optimal_cuda_device()
+    if !CUDA.functional()
+        println("❌ CUDA GPU is not available - falling back to CPU")
+        return false
+    end
     
-    # Set CUDA memory pool for better performance
+    println("✅ CUDA is functional")
+    num_devices = CUDA.ndevices()
+    println("Number of CUDA devices detected: $num_devices")
+    
+    if num_devices == 0
+        println("❌ No CUDA devices found")
+        return false
+    end
+    
+    # For systems with V100s, prefer the first V100 found
+    best_device_id = 0
+    best_score = -1000
+    
+    println("\n=== CUDA Device Analysis ===")
+    for i in 0:(num_devices-1)
+        device = CuDevice(i)
+        name = CUDA.name(device)
+        total_memory = CUDA.totalmem(device)
+        total_memory_gb = total_memory / (1024^3)
+        
+        # Calculate performance score (higher is better)
+        score = 0
+        
+        # Prefer professional GPUs (V100, Tesla, Quadro)
+        if occursin("V100", name) || occursin("Tesla", name) || occursin("Quadro", name)
+            score += 1000
+            println("Device $i: $name [🚀 PROFESSIONAL GPU]")
+        elseif occursin("RTX", name) || occursin("GTX", name)
+            score += 500  
+            println("Device $i: $name [💻 CONSUMER GPU]")
+        else
+            println("Device $i: $name [⚠️  OTHER/INTEGRATED]")
+        end
+        
+        # Memory scoring (V100 typically has 16GB or 32GB)
+        if total_memory_gb >= 16
+            score += 200
+        elseif total_memory_gb >= 8
+            score += 100
+        elseif total_memory_gb < 4
+            score -= 200  # Likely integrated graphics
+        end
+        
+        println("  Memory: $(round(total_memory_gb, digits=2)) GB")
+        println("  Performance Score: $score")
+        
+        if score > best_score
+            best_score = score
+            best_device_id = i
+        end
+        println()
+    end
+    
+    # Set the best device
+    CUDA.device!(best_device_id)
+    current_device = CUDA.device()
+    device_name = CUDA.name(current_device)
+    device_id = CUDA.deviceid(current_device)
+    
+    println("=== Selected Device ===")
+    println("✅ Using Device $device_id: $device_name")
+    println("Memory: $(round(CUDA.totalmem(current_device) / 1024^3, digits=2)) GB")
+    
+    # Optimize CUDA settings
     CUDA.reclaim()
-    println("CUDA memory pool initialized")
-else
-    println("❌ CUDA GPU is not available - falling back to CPU")
+    println("✅ CUDA memory pool initialized")
+    
+    return true
 end
+
+# Configure CUDA device at startup
+cuda_available = configure_optimal_cuda_device()
 
 # Preprocess the solution to get the final concentrations of A, B, C, E1, E2
 function preprocess_solution(sol)
@@ -581,7 +646,7 @@ end
 function simulate_reaction_batch_gpu(param_batch, tspan)
     results = []
     
-    if CUDA.functional()
+    if cuda_available && CUDA.functional()
         println("Using CUDA GPU acceleration for batch of $(length(param_batch)) simulations")
         
         # Use optimized GPU processing with kernel for larger batches
@@ -799,7 +864,7 @@ end
 
 # CUDA memory management function
 function manage_cuda_memory()
-    if CUDA.functional()
+    if cuda_available && CUDA.functional()
         # Reclaim unused memory
         CUDA.reclaim()
         
@@ -813,7 +878,7 @@ end
 function run_parameter_scan_cuda(param_grid, batch_size=nothing, max_simulations=100000)
     # Auto-optimize batch size based on GPU memory
     if batch_size === nothing
-        if CUDA.functional()
+        if cuda_available && CUDA.functional()
             gpu_memory = CUDA.totalmem(CUDA.device())
             # Use 20% of GPU memory for batch processing
             estimated_memory_per_sim = 1024 * 1024  # 1MB per simulation

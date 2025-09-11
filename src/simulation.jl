@@ -1,5 +1,6 @@
 using Catalyst
 using DifferentialEquations
+using Unitful
 
 
 # Define parameters and variables (using k1f, k1r, ... naming)
@@ -122,4 +123,39 @@ function calculate_thermo_fluxes(sol, params; T=298.15)
         "R1" => R1,
         "R2" => R2
     )
+end
+
+# === Unitful variants (accept μmol/L and s, return unit-checked arrays) ===
+
+function simulate_system_unitful(params_u, initial_conditions_u, tspan_u; saveat_u)
+    # Helper to strip units to desired units
+    su(x, u) = ustrip(u, x)
+
+    # Map parameters to numeric with correct units
+    p = Dict{Symbol,Float64}()
+    p[:k1f] = su(params_u[:k1f], u"L/(μmol*s)")
+    p[:k1r] = su(params_u[:k1r], u"s^-1")
+    p[:k2f] = su(params_u[:k2f], u"s^-1")
+    p[:k2r] = su(params_u[:k2r], u"L/(μmol*s)")
+    p[:k3f] = su(params_u[:k3f], u"L/(μmol*s)")
+    p[:k3r] = su(params_u[:k3r], u"s^-1")
+    p[:k4f] = su(params_u[:k4f], u"s^-1")
+    p[:k4r] = su(params_u[:k4r], u"L/(μmol*s)")
+
+    ic_u = initial_conditions_u
+    ic = [
+        A   => su(ic_u[1].second, u"μmol/L"),
+        B   => su(ic_u[2].second, u"μmol/L"),
+        C   => su(ic_u[3].second, u"μmol/L"),
+        E1  => su(ic_u[4].second, u"μmol/L"),
+        E2  => su(ic_u[5].second, u"μmol/L"),
+        AE1 => su(ic_u[6].second, u"μmol/L"),
+        BE2 => su(ic_u[7].second, u"μmol/L")
+    ]
+
+    ts = (su(tspan_u[1], u"s"), su(tspan_u[2], u"s"))
+
+    sol = simulate_system(p, ic, ts; saveat=su(saveat_u, u"s"))
+
+    return sol
 end

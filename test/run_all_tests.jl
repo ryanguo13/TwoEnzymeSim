@@ -11,7 +11,8 @@ test_files = [
     "test_tuple_fix.jl",
     "test_visualization_fix.jl",
     "test_gpu_optimization.jl",
-    "debug_data_structure.jl"
+    "debug_data_structure.jl",
+    "test_unitful_validation.jl"
 ]
 
 # Run each test
