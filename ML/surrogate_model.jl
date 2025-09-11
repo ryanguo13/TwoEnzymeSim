@@ -1107,6 +1107,9 @@ function partition(collection, n)
     return result
 end
 
+# 引入Gaussian Process实现（需要 SurrogateModel 已定义）
+include("gaussian_process.jl")
+
 """
     predict_with_uncertainty(surrogate_model::SurrogateModel, X_new::Matrix{Float64}; n_samples::Int=100)
 
@@ -1123,9 +1126,15 @@ function predict_with_uncertainty(surrogate_model::SurrogateModel, X_new::Matrix
     else
         X_processed = X_normalized
     end
+    # 确保为标准Matrix类型，避免Adjoint导致方法匹配问题
+    X_processed = Array(X_processed)
 
     # 预测
-    if config.uncertainty_estimation && config.model_type == :neural_network
+    if config.model_type == :gaussian_process
+        # 使用GP预测（当前实现返回均值，无显式不确定性）
+        y_pred_mean = predict_gaussian_process(surrogate_model, X_processed)
+        y_pred_std = zeros(size(y_pred_mean))
+    elseif config.uncertainty_estimation && config.model_type == :neural_network
         # 使用MC Dropout进行不确定性估计（强制启用dropout）
         Flux.trainmode!(surrogate_model.model)
         preds = Array{Float64}[]

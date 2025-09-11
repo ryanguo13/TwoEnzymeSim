@@ -556,6 +556,41 @@ function main()
         # 性能对比
         comparison_results = compare_surrogate_vs_cuda(surrogate_model, 1000)
 
+    elseif ARGS[1] == "gp"
+        # Gaussian Process 工作流程
+        println("🔮 GP 工作流程")
+        cuda_available = configure_cuda_device()
+
+        config = SurrogateModelConfig(
+            sample_fraction = 0.1,
+            max_samples = 5000,
+            model_type = :gaussian_process,
+            use_pca = true,
+            pca_variance_threshold = 0.95,
+            uncertainty_estimation = false,  # GP预测接口当前实现返回均值
+            use_cuda = false,  # GP训练/预测在CPU
+            apply_thermodynamic_constraints = true,
+            keq_min = 0.01,
+            keq_max = 100.0,
+        )
+
+        param_space = create_default_parameter_space()
+        surrogate_model = SurrogateModel(config, param_space)
+
+        println("📊 生成训练数据 (GP)")
+        X_data, y_data = generate_small_scale_data(surrogate_model)
+        preprocess_data!(surrogate_model, X_data, y_data)
+        train_surrogate_model!(surrogate_model)  # 内部将调用 train_gaussian_process!
+
+        println("📈 评估GP代理模型 vs CPU仿真")
+        comparison_results = compare_surrogate_vs_cuda(surrogate_model, 300)  # 对比接口可复用
+
+        println("💾 保存GP模型")
+        model_path = "/home/ryankwok/Documents/TwoEnzymeSim/ML/model/cuda_integrated_surrogate.jld2"
+        save_surrogate_model(surrogate_model, model_path)
+
+        println("✅ GP流程完成")
+
     elseif ARGS[1] == "test"
         # 测试模式：无热力学约束
         println("🧪 测试模式（无热力学约束，强制CPU）")

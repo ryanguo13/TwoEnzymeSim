@@ -13,8 +13,9 @@ using Plots
 
 include("surrogate_model.jl")
 
-const RESULT_DIR = "ML/result"
-const MODEL_DIR  = "ML/model"
+
+const RESULT_DIR = joinpath(@__DIR__, "result")
+const MODEL_DIR  = joinpath(@__DIR__, "model")
 
 function ensure_dir(path::String)
     if !isdir(path)
