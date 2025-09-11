@@ -22,3 +22,21 @@
 # ignore all the jld2 files
 ML/model/*.jld2
 *.jld2
+
+# results and generated artifacts
+ML/result/**
+results/**
+**/outputs/**
+**/figures/**
+**/plots/**
+**/artifacts/**
+**/checkpoints/**
+**/logs/**
+**/wandb/**
+**/tensorboard/**
+
+# common data directories
+data/**
+datasets/**
+**/tmp/**
+**/temp/**
