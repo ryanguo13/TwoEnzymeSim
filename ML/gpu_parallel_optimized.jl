@@ -19,6 +19,7 @@ using Printf
 using LinearAlgebra
 using Statistics
 using ProgressMeter
+using StaticArrays
 
 """
     GPUParallelConfig
@@ -53,14 +54,14 @@ end
 """
 function default_gpu_config()
     return GPUParallelConfig(
-        CUDA.ndevices() > 1,  # use_multi_gpu
-        1000,                 # gpu_batch_size
+        false,                # use_multi_gpu (先用单GPU稳定路径)
+        2000,                 # gpu_batch_size
         0.8,                  # max_memory_usage
-        :Tsit5,               # ode_solver
+        :GPUTsit5,            # ode_solver
         1e-6,                 # abstol
         1e-3,                 # reltol
         10000,                # maxiters
-        true,                 # async_processing
+        false,                # async_processing
         true,                 # overlap_transfers
         false,                # verbose
         false                 # profile_gpu
@@ -94,6 +95,24 @@ mutable struct OptimizedGPUSolver
         return solver
     end
 end
+# GPU-friendly parameter struct
+struct GPUParams
+    k1f::Float64; k1r::Float64; k2f::Float64; k2r::Float64
+    k3f::Float64; k3r::Float64; k4f::Float64; k4r::Float64
+end
+
+@inline function to_su0(u::AbstractVector)
+    return SVector{7,Float64}(
+        Float64(u[1]), Float64(u[2]), Float64(u[3]),
+        Float64(u[4]), Float64(u[5]), Float64(u[6]), Float64(u[7])
+    )
+end
+
+@inline function to_pp(p::AbstractVector)
+    return GPUParams(Float64(p[1]), Float64(p[2]), Float64(p[3]), Float64(p[4]),
+                     Float64(p[5]), Float64(p[6]), Float64(p[7]), Float64(p[8]))
+end
+
 
 """
     initialize_gpu_resources!(solver::OptimizedGPUSolver)
@@ -159,30 +178,77 @@ GPU优化的ODE函数（支持CUDA数组）
 """
 function reaction_ode_gpu!(du, u, p, t)
     # 解构参数
-    k1f, k1r, k2f, k2r, k3f, k3r, k4f, k4r = p
+    k1f = p.k1f; k1r = p.k1r; k2f = p.k2f; k2r = p.k2r
+    k3f = p.k3f; k3r = p.k3r; k4f = p.k4f; k4r = p.k4r
 
     # 状态变量: A, B, C, E1, E2, AE1, BE2
     A, B, C, E1, E2, AE1, BE2 = u
 
-    # 确保非负（使用max.()进行向量化操作）
-    A = max.(A, 0.0)
-    B = max.(B, 0.0)
-    C = max.(C, 0.0)
-    E1 = max.(E1, 0.0)
-    E2 = max.(E2, 0.0)
-    AE1 = max.(AE1, 0.0)
-    BE2 = max.(BE2, 0.0)
+    # 数值稳定性：对状态做区间裁剪，避免爆炸或负值
+    @inbounds begin
+        A   = clamp(A,   0.0, 1.0e9)
+        B   = clamp(B,   0.0, 1.0e9)
+        C   = clamp(C,   0.0, 1.0e9)
+        E1  = clamp(E1,  0.0, 1.0e9)
+        E2  = clamp(E2,  0.0, 1.0e9)
+        AE1 = clamp(AE1, 0.0, 1.0e9)
+        BE2 = clamp(BE2, 0.0, 1.0e9)
+    end
 
-    # 反应速率方程
-    du[1] = -k1f*A*E1 + k1r*AE1                        # dA/dt
-    du[2] = k2f*AE1 - k2r*B*E1 - k3f*B*E2 + k3r*BE2   # dB/dt
-    du[3] = k4f*BE2 - k4r*C*E2                         # dC/dt
-    du[4] = -k1f*A*E1 + k1r*AE1 + k2f*AE1 - k2r*B*E1  # dE1/dt
-    du[5] = -k3f*B*E2 + k3r*BE2 + k4f*BE2 - k4r*C*E2  # dE2/dt
-    du[6] = k1f*A*E1 - k1r*AE1 - k2f*AE1 + k2r*B*E1   # dAE1/dt
-    du[7] = k3f*B*E2 - k3r*BE2 - k4f*BE2 + k4r*C*E2   # dBE2/dt
+    # 数值稳定的乘积（避免溢出）
+    AE1_f = clamp(A * E1, -1.0e12, 1.0e12)
+    BE2_f = clamp(B * E2, -1.0e12, 1.0e12)
+
+    # 反应速率方程（使用安全乘积）
+    du[1] = -k1f*AE1_f + k1r*AE1                        # dA/dt
+    du[2] = k2f*AE1 - k2r*clamp(B * E1, -1.0e12, 1.0e12) - k3f*BE2_f + k3r*BE2   # dB/dt
+    du[3] = k4f*BE2 - k4r*clamp(C * E2, -1.0e12, 1.0e12)                         # dC/dt
+    du[4] = -k1f*AE1_f + k1r*AE1 + k2f*AE1 - k2r*clamp(B * E1, -1.0e12, 1.0e12)  # dE1/dt
+    du[5] = -k3f*BE2_f + k3r*BE2 + k4f*BE2 - k4r*clamp(C * E2, -1.0e12, 1.0e12)  # dE2/dt
+    du[6] = k1f*AE1_f - k1r*AE1 - k2f*AE1 + k2r*clamp(B * E1, -1.0e12, 1.0e12)   # dAE1/dt
+    du[7] = k3f*BE2_f - k3r*BE2 - k4f*BE2 + k4r*clamp(C * E2, -1.0e12, 1.0e12)   # dBE2/dt
+
+    # 确保导数有限
+    @inbounds for i in 1:7
+        val = du[i]
+        if !isfinite(val)
+            du[i] = 0.0
+        else
+            du[i] = clamp(val, -1.0e12, 1.0e12)
+        end
+    end
 
     return nothing
+end
+
+"""
+    reaction_ode_gpu_oop(u, p, t) -> SVector{7,Float32}
+
+Out-of-place GPU ODE for kernel execution
+"""
+function reaction_ode_gpu_oop(u, p, t)
+    # parameters
+    k1f, k1r, k2f, k2r = p.k1f, p.k1r, p.k2f, p.k2r
+    k3f, k3r, k4f, k4r = p.k3f, p.k3r, p.k4f, p.k4r
+
+    # state with non-negativity
+    A   = ifelse(u[1] > 0.0, u[1], 0.0)
+    B   = ifelse(u[2] > 0.0, u[2], 0.0)
+    C   = ifelse(u[3] > 0.0, u[3], 0.0)
+    E1  = ifelse(u[4] > 0.0, u[4], 0.0)
+    E2  = ifelse(u[5] > 0.0, u[5], 0.0)
+    AE1 = ifelse(u[6] > 0.0, u[6], 0.0)
+    BE2 = ifelse(u[7] > 0.0, u[7], 0.0)
+
+    du1 = -k1f*A*E1 + k1r*AE1
+    du2 =  k2f*AE1 - k2r*B*E1 - k3f*B*E2 + k3r*BE2
+    du3 =  k4f*BE2 - k4r*C*E2
+    du4 = -k1f*A*E1 + k1r*AE1 + k2f*AE1 - k2r*B*E1
+    du5 = -k3f*B*E2 + k3r*BE2 + k4f*BE2 - k4r*C*E2
+    du6 =  k1f*A*E1 - k1r*AE1 - k2f*AE1 + k2r*B*E1
+    du7 =  k3f*B*E2 - k3r*BE2 - k4f*BE2 + k4r*C*E2
+
+    return SVector{7,Float64}(du1, du2, du3, du4, du5, du6, du7)
 end
 
 """
@@ -201,7 +267,7 @@ function solve_batch_gpu_optimized(solver::OptimizedGPUSolver, X_samples::Matrix
     end
 
     start_time = time()
-    results = zeros(Float32, n_samples, n_outputs)
+    results = zeros(Float64, n_samples, n_outputs)
 
     if n_gpus > 1 && solver.config.async_processing
         # 多GPU异步并行处理
@@ -271,18 +337,15 @@ function solve_multi_gpu_async(solver::OptimizedGPUSolver, X_samples::Matrix{Flo
     end
 
     # 收集所有异步结果
-    final_results = zeros(Float32, n_samples, n_outputs)
+    final_results = zeros(Float64, n_samples, n_outputs)
 
     for (start_idx, end_idx, task) in results_futures
         try
             chunk_results = fetch(task)
             final_results[start_idx:end_idx, :] = chunk_results
         catch e
-            println("⚠️  GPU任务失败，使用CPU回退: $(typeof(e))")
-            # CPU回退处理
-            X_chunk = X_samples[start_idx:end_idx, :]
-            fallback_results = solve_cpu_fallback(X_chunk, tspan, target_vars)
-            final_results[start_idx:end_idx, :] = fallback_results
+            println("⚠️  GPU任务失败，标记为NaN并继续: $(typeof(e))")
+            final_results[start_idx:end_idx, :] .= NaN
         end
     end
 
@@ -302,11 +365,11 @@ function solve_gpu_chunk_async(solver::OptimizedGPUSolver, X_chunk::Matrix{Float
 
     n_chunk = size(X_chunk, 1)
     n_outputs = length(target_vars)
-    chunk_results = zeros(Float32, n_chunk, n_outputs)
+    chunk_results = zeros(Float64, n_chunk, n_outputs)
 
     try
         # 数据传输到GPU（异步）
-        X_gpu = CuArray{Float32}(X_chunk)
+        X_gpu = CuArray{Float64}(X_chunk)
 
         # 准备初始条件和参数
         u0_array = prepare_initial_conditions_gpu(X_gpu)
@@ -329,7 +392,7 @@ function solve_gpu_chunk_async(solver::OptimizedGPUSolver, X_chunk::Matrix{Float
         # GPU并行求解
         sol = solve(ensemble_prob,
             get_gpu_solver(solver.config.ode_solver),
-            EnsembleGPUArray(0),
+            EnsembleGPUArray(),
             trajectories = n_chunk,
             abstol = solver.config.abstol,
             reltol = solver.config.reltol,
@@ -337,13 +400,14 @@ function solve_gpu_chunk_async(solver::OptimizedGPUSolver, X_chunk::Matrix{Float
             saveat = tspan[2]  # 只保存终点
         )
 
-        # 提取目标变量（在GPU上完成）
-        chunk_results = extract_target_variables_gpu(sol, target_vars, X_gpu)
+        # 提取目标变量（在CPU上从每条轨迹的prob.p读取参数）
+        chunk_results = extract_and_transfer_results(sol, target_vars)
 
     catch e
-        println("⚠️  GPU $gpu_id 求解失败，使用CPU回退: $(typeof(e))")
-        # 回退到CPU
-        chunk_results = solve_cpu_fallback(X_chunk, tspan, target_vars)
+        bt = catch_backtrace()
+        println("⚠️  GPU $gpu_id 求解失败，标记为NaN并继续: $(typeof(e))")
+        println(sprint(showerror, e, bt))
+        chunk_results .= NaN
     end
 
     return chunk_results
@@ -369,7 +433,7 @@ function solve_single_gpu_optimized(solver::OptimizedGPUSolver, X_samples::Matri
         println("📊 优化批处理: 批大小 = $optimal_batch_size")
     end
 
-    results = zeros(Float32, n_samples, n_outputs)
+    results = zeros(Float64, n_samples, n_outputs)
 
     # 分批处理
     @showprogress "GPU处理进度: " for start_idx in 1:optimal_batch_size:n_samples
@@ -382,9 +446,10 @@ function solve_single_gpu_optimized(solver::OptimizedGPUSolver, X_samples::Matri
             batch_results = process_gpu_batch(solver, X_batch, tspan, target_vars)
             results[start_idx:end_idx, :] = batch_results
         catch e
-            println("⚠️  批处理失败，使用CPU回退: $(typeof(e))")
-            batch_results = solve_cpu_fallback(X_batch, tspan, target_vars)
-            results[start_idx:end_idx, :] = batch_results
+            bt = catch_backtrace()
+            println("⚠️  批处理失败，标记为NaN并继续: $(typeof(e))")
+            println(sprint(showerror, e, bt))
+            results[start_idx:end_idx, :] .= NaN
         end
 
         # 内存清理
@@ -407,7 +472,7 @@ function process_gpu_batch(solver::OptimizedGPUSolver, X_batch::Matrix{Float64},
     n_outputs = length(target_vars)
 
     # 转换为GPU数组
-    X_gpu = CuArray{Float32}(X_batch)
+    X_gpu = CuArray{Float64}(X_batch)
 
     # 准备初始条件和参数（批量处理）
     u0_array = prepare_initial_conditions_gpu(X_gpu)
@@ -417,7 +482,7 @@ function process_gpu_batch(solver::OptimizedGPUSolver, X_batch::Matrix{Float64},
     results_gpu = solve_ode_batch_gpu(solver, u0_array, p_array, tspan, n_batch)
 
     # 提取目标变量并转回CPU
-    batch_results = extract_and_transfer_results(results_gpu, target_vars, X_gpu)
+    batch_results = extract_and_transfer_results(results_gpu, target_vars)
 
     return batch_results
 end
@@ -429,7 +494,7 @@ end
 """
 function prepare_initial_conditions_gpu(X_gpu::CuArray)
     n_samples = size(X_gpu, 1)
-    u0_array = CuArray{Float32}(undef, 7, n_samples)  # 7个状态变量
+    u0_array = CuArray{Float64}(undef, 7, n_samples)  # 7个状态变量
 
     # GPU kernel会更高效，这里简化实现
     u0_array[1, :] = X_gpu[:, 9]   # A
@@ -437,8 +502,8 @@ function prepare_initial_conditions_gpu(X_gpu::CuArray)
     u0_array[3, :] = X_gpu[:, 11]  # C
     u0_array[4, :] = X_gpu[:, 12]  # E1
     u0_array[5, :] = X_gpu[:, 13]  # E2
-    u0_array[6, :] .= 0.0f0        # AE1
-    u0_array[7, :] .= 0.0f0        # BE2
+    u0_array[6, :] .= 0.0          # AE1
+    u0_array[7, :] .= 0.0          # BE2
 
     return u0_array
 end
@@ -450,7 +515,7 @@ end
 """
 function prepare_parameters_gpu(X_gpu::CuArray)
     n_samples = size(X_gpu, 1)
-    p_array = CuArray{Float32}(undef, 8, n_samples)  # 8个反应常数
+    p_array = CuArray{Float64}(undef, 8, n_samples)  # 8个反应常数
 
     p_array[1, :] = X_gpu[:, 1]  # k1f
     p_array[2, :] = X_gpu[:, 2]  # k1r
@@ -471,29 +536,65 @@ GPU批量ODE求解
 """
 function solve_ode_batch_gpu(solver::OptimizedGPUSolver, u0_array::CuArray, p_array::CuArray,
                             tspan::Tuple{Float64, Float64}, n_batch::Int)
-    # 这里应该使用CUDA kernel实现高效的批量ODE求解
-    # 为简化演示，使用EnsembleGPUArray
+    # 使用EnsembleGPUArray + in-place Float64 ODE（更稳定）
+    u0_mat = Array{Float64}(undef, 7, n_batch)
+    p_vec = Vector{GPUParams}(undef, n_batch)
+    @inbounds for i in 1:n_batch
+        u0_mat[:, i] = Array(u0_array[:, i])
+        pi = Array(p_array[:, i])
+        p_vec[i] = GPUParams(pi[1], pi[2], pi[3], pi[4], pi[5], pi[6], pi[7], pi[8])
+    end
 
-    prob_func = (prob, i, repeat) -> remake(prob,
-        u0 = u0_array[:, i],
-        p = p_array[:, i]
-    )
+    prob_func = (prob, i, repeat) -> remake(prob, u0=u0_mat[:, i], p=p_vec[i])
 
-    u0_base = u0_array[:, 1]
-    p_base = p_array[:, 1]
-    prob_base = ODEProblem(reaction_ode_gpu!, u0_base, tspan, p_base)
-
+    prob_base = ODEProblem(reaction_ode_gpu!, u0_mat[:, 1], tspan, p_vec[1]; isoutofdomain = (u,p,t)->any(!isfinite, u))
     ensemble_prob = EnsembleProblem(prob_base, prob_func=prob_func)
 
     sol = solve(ensemble_prob,
         get_gpu_solver(solver.config.ode_solver),
-        EnsembleGPUArray(0),
+        EnsembleGPUArray(CUDA.CUDABackend());
         trajectories = n_batch,
-        abstol = solver.config.abstol,
-        reltol = solver.config.reltol,
+        abstol = min(solver.config.abstol, 1e-8),
+        reltol = min(solver.config.reltol, 1e-6),
         maxiters = solver.config.maxiters,
-        saveat = [tspan[2]]
+        saveat = [tspan[2]],
+        dt = (tspan[2]-tspan[1]) / 10000.0,
+        dtmax = (tspan[2]-tspan[1]) / 100.0,
+        adaptive = false
     )
+
+    # 调试：打印部分轨迹retcode与终态是否有限
+    try
+        total = length(sol)
+        ok = 0
+        limit = min(10, total)
+        println("🔎 GPU调试: 采样 $limit/$total 条轨迹")
+        for i in 1:limit
+            r = sol[i].retcode
+            print("  traj ", i, " retcode=", r)
+            if r == :Success && length(sol[i].u) > 0
+                uend = sol[i].u[end]
+                finite = all(isfinite, uend)
+                println(", uend_finite=", finite)
+                if finite
+                    ok += 1
+                end
+            else
+                println()
+            end
+        end
+        println("✅ 有限终态样本: ", ok, "/", limit)
+        if limit > 0
+            try
+                uend = sol[1].u[end]
+                println("🔬 示例终态[1]: ", uend)
+            catch e
+                println("⚠️  无法打印示例终态: ", typeof(e))
+            end
+        end
+    catch e
+        println("⚠️  调试信息打印失败: ", typeof(e))
+    end
 
     return sol
 end
@@ -503,11 +604,11 @@ end
 
 提取结果并传输回CPU
 """
-function extract_and_transfer_results(sol, target_vars::Vector{Symbol}, X_gpu::CuArray)
-    n_batch = size(X_gpu, 1)
+function extract_and_transfer_results(sol, target_vars::Vector{Symbol})
+    n_batch = length(sol)
     n_outputs = length(target_vars)
 
-    results = zeros(Float32, n_batch, n_outputs)
+    results = zeros(Float64, n_batch, n_outputs)
 
     # 从解中提取目标变量
     for i in 1:n_batch
@@ -515,9 +616,9 @@ function extract_and_transfer_results(sol, target_vars::Vector{Symbol}, X_gpu::C
         if sol_i.retcode == :Success && length(sol_i.u) > 0
             final_state = Array(sol_i.u[end])  # 转回CPU进行提取
 
-            # 计算目标变量
+            # 计算目标变量（参数从prob.p读取，兼容isbits）
             for (j, var) in enumerate(target_vars)
-                results[i, j] = extract_single_target_variable(final_state, var, sol_i, X_gpu[i, :])
+                results[i, j] = extract_single_target_variable(final_state, var, sol_i)
             end
         else
             # 求解失败，填入NaN
@@ -533,7 +634,7 @@ end
 
 提取单个目标变量
 """
-function extract_single_target_variable(final_state::Vector{Float32}, var::Symbol, sol, params)
+function extract_single_target_variable(final_state::Vector{Float64}, var::Symbol, sol)
     # final_state: [A, B, C, E1, E2, AE1, BE2]
     if var == :A_final
         return final_state[1]
@@ -543,20 +644,24 @@ function extract_single_target_variable(final_state::Vector{Float32}, var::Symbo
         return final_state[3]
     elseif var == :v1_mean
         # 计算平均反应速率 v1 = k1f*A*E1 - k1r*AE1
-        k1f, k1r = params[1], params[2]
+        p = sol.prob.p
+        k1f = Base.hasproperty(p, :k1f) ? p.k1f : p[1]
+        k1r = Base.hasproperty(p, :k1r) ? p.k1r : p[2]
         A_mean = mean([sol.u[i][1] for i in 1:length(sol.u)])
         E1_mean = mean([sol.u[i][4] for i in 1:length(sol.u)])
         AE1_mean = mean([sol.u[i][6] for i in 1:length(sol.u)])
         return k1f * A_mean * E1_mean - k1r * AE1_mean
     elseif var == :v2_mean
         # 计算平均反应速率 v2 = k3f*B*E2 - k3r*BE2
-        k3f, k3r = params[5], params[6]
+        p = sol.prob.p
+        k3f = Base.hasproperty(p, :k3f) ? p.k3f : p[5]
+        k3r = Base.hasproperty(p, :k3r) ? p.k3r : p[6]
         B_mean = mean([sol.u[i][2] for i in 1:length(sol.u)])
         E2_mean = mean([sol.u[i][5] for i in 1:length(sol.u)])
         BE2_mean = mean([sol.u[i][7] for i in 1:length(sol.u)])
         return k3f * B_mean * E2_mean - k3r * BE2_mean
     else
-        return NaN32
+        return NaN
     end
 end
 
@@ -619,7 +724,7 @@ function calculate_optimal_batch_size(solver::OptimizedGPUSolver, n_samples::Int
     available_memory = CUDA.totalmem(CUDA.device()) * solver.config.max_memory_usage
 
     # 估算每个样本的内存需求
-    memory_per_sample = n_features * 4 * 10  # Float32, 约10倍放大系数
+    memory_per_sample = n_features * 8 * 10  # Float64, 约10倍放大系数
 
     theoretical_batch_size = floor(Int, available_memory / memory_per_sample)
 
@@ -639,8 +744,8 @@ end
 获取GPU求解器 - 使用Tsit5()配合EnsembleGPUArray(0)
 """
 function get_gpu_solver(solver_type::Symbol)
-    # 使用Tsit5()而不是GPUTsit5()，因为GPUTsit5()与EnsembleGPUArray有兼容性问题
-    return Tsit5()
+    # Use Rosenbrock23 with finite-difference Jacobian on GPU (Float64)
+    return Rosenbrock23(autodiff = AutoFiniteDiff())
 end
 
 """
@@ -648,16 +753,7 @@ end
 
 CPU回退求解
 """
-function solve_cpu_fallback(X_batch::Matrix{Float64}, tspan::Tuple{Float64, Float64}, target_vars::Vector{Symbol})
-    println("🔄 启用CPU回退模式")
-
-    # 这里应该调用原有的CPU求解函数
-    # 为演示目的，返回随机结果
-    n_batch = size(X_batch, 1)
-    n_outputs = length(target_vars)
-
-    return rand(Float32, n_batch, n_outputs)
-end
+# 已移除CPU回退：纯GPU执行，失败样本将标记为NaN
 
 """
     cleanup_gpu_resources!(solver::OptimizedGPUSolver)

@@ -18,6 +18,7 @@ using MultivariateStats
 using Statistics
 using LinearAlgebra
 using Random
+using TOML
 
 # Include core simulation modules
 include("../src/simulation.jl")
@@ -28,7 +29,8 @@ using JLD2
 using CUDA
 using DifferentialEquations
 using DiffEqGPU
-using DiffEqGPU: EnsembleGPUArray
+using StaticArrays
+using DiffEqGPU: EnsembleGPUArray, EnsembleGPUKernel
 using Distributed
 using Printf
 using IterTools
@@ -76,8 +78,13 @@ Base.@kwdef struct SurrogateModelConfig
 
     # 热力学约束配置
     apply_thermodynamic_constraints::Bool = true  # 是否应用热力学约束
-    keq_min::Float64 = 0.01            # 平衡常数最小值 (放宽约束)
-    keq_max::Float64 = 100.0           # 平衡常数最大值 (放宽约束)
+    # 约束模式: :range 使用范围; :fixed 固定Keq等式 (允许速率变动但比值固定)
+    constraint_mode::Symbol = :range
+    keq_min::Float64 = 0.01            # 平衡常数最小值 (范围模式)
+    keq_max::Float64 = 100.0           # 平衡常数最大值 (范围模式)
+    keq1_fixed::Union{Nothing,Float64} = nothing  # 固定Keq1 (固定模式)
+    keq2_fixed::Union{Nothing,Float64} = nothing  # 固定Keq2 (固定模式)
+    keq_tolerance::Float64 = 1e-3      # 固定模式允许的相对误差
 end
 
 """
@@ -114,19 +121,19 @@ end
 """
 function create_default_parameter_space()
     return ParameterSpace(
-        0.1:4:20.0,   # k1f_range (20 points)
-        0.1:4:20.0,   # k1r_range
-        0.1:4:20.0,   # k2f_range
-        0.1:4:20.0,   # k2r_range
-        0.1:4:20.0,   # k3f_range
-        0.1:4:20.0,   # k3r_range
-        0.1:4:20.0,   # k4f_range
-        0.1:4:20.0,   # k4r_range
-        5.0:4:20.0,   # A_range
-        0.0:4:5.0,    # B_range
-        0.0:4:5.0,    # C_range
-        5.0:4:20.0,   # E1_range
-        5.0:4:20.0,   # E2_range
+        0.1:0.02:20.0,   # k1f_range (20 points)
+        0.1:0.02:20.0,   # k1r_range
+        0.1:0.02:20.0,   # k2f_range
+        0.1:0.02:20.0,   # k2r_range
+        0.1:0.02:20.0,   # k3f_range
+        0.1:0.02:20.0,   # k3r_range
+        0.1:0.02:20.0,   # k4f_range
+        0.1:0.02:20.0,   # k4r_range
+        0.1:0.02:20.0,   # A_range
+        0.0:0.02:20.0,    # B_range
+        0.0:0.02:20.0,    # C_range
+        0.1:0.02:20.0,   # E1_range
+        0.1:0.02:20.0,   # E2_range
         (0.0, 5.0)    # tspan
     )
 end
@@ -215,19 +222,41 @@ end
 """
     check_thermodynamic_constraints(k1f, k1r, k2f, k2r, k3f, k3r, k4f, k4r, config::SurrogateModelConfig)
 
-检查热力学约束
+检查热力学约束。
+支持两种模式：
+- :range 模式：Keq1, Keq2 ∈ [keq_min, keq_max]
+- :fixed 模式：Keq1 ≈ keq1_fixed 与 Keq2 ≈ keq2_fixed（相对误差 ≤ keq_tolerance）
 """
 function check_thermodynamic_constraints(k1f, k1r, k2f, k2r, k3f, k3r, k4f, k4r, config::SurrogateModelConfig)
     if !config.apply_thermodynamic_constraints
         return true
     end
 
-    # 计算平衡常数
     Keq1 = (k1f * k2f) / (k1r * k2r)
     Keq2 = (k3f * k4f) / (k3r * k4r)
 
-    # 应用约束
-    return (config.keq_min <= Keq1 <= config.keq_max) && (config.keq_min <= Keq2 <= config.keq_max)
+    if config.constraint_mode == :fixed
+        # 若未提供固定值，回退到范围逻辑
+        keq1_target = config.keq1_fixed
+        keq2_target = config.keq2_fixed
+        tol = config.keq_tolerance
+
+        if keq1_target !== nothing
+            rel_err1 = abs(Keq1 - keq1_target) / max(abs(keq1_target), 1e-12)
+            if rel_err1 > tol
+                return false
+            end
+        end
+        if keq2_target !== nothing
+            rel_err2 = abs(Keq2 - keq2_target) / max(abs(keq2_target), 1e-12)
+            if rel_err2 > tol
+                return false
+            end
+        end
+        return true
+    else
+        return (config.keq_min <= Keq1 <= config.keq_max) && (config.keq_min <= Keq2 <= config.keq_max)
+    end
 end
 
 """
@@ -290,21 +319,27 @@ function generate_small_scale_data(surrogate_model::SurrogateModel)
 
     if config.apply_thermodynamic_constraints
         println("🧪 应用热力学约束:")
-        println("  Keq1 = (k1f * k2f) / (k1r * k2r) ∈ [$(config.keq_min), $(config.keq_max)]")
-        println("  Keq2 = (k3f * k4f) / (k3r * k4r) ∈ [$(config.keq_min), $(config.keq_max)]")
+        if config.constraint_mode == :fixed
+            println("  固定Keq模式 (允许速率改变但比值固定，容差=$(config.keq_tolerance))")
+            println("  Keq1_target = $(config.keq1_fixed), Keq2_target = $(config.keq2_fixed)")
+        else
+            println("  范围模式: Keq1, Keq2 ∈ [$(config.keq_min), $(config.keq_max)]")
+        end
     end
 
     # 计算总参数组合数
-    total_combinations = length(param_space.k1f_range) * length(param_space.k1r_range) *
-                        length(param_space.k2f_range) * length(param_space.k2r_range) *
-                        length(param_space.k3f_range) * length(param_space.k3r_range) *
-                        length(param_space.k4f_range) * length(param_space.k4r_range) *
-                        length(param_space.A_range) * length(param_space.B_range) *
-                        length(param_space.C_range) * length(param_space.E1_range) *
-                        length(param_space.E2_range)
+    total_combinations_big = big(length(param_space.k1f_range)) * big(length(param_space.k1r_range)) *
+                             big(length(param_space.k2f_range)) * big(length(param_space.k2r_range)) *
+                             big(length(param_space.k3f_range)) * big(length(param_space.k3r_range)) *
+                             big(length(param_space.k4f_range)) * big(length(param_space.k4r_range)) *
+                             big(length(param_space.A_range)) * big(length(param_space.B_range)) *
+                             big(length(param_space.C_range)) * big(length(param_space.E1_range)) *
+                             big(length(param_space.E2_range))
 
-    n_samples = min(Int(round(total_combinations * config.sample_fraction)), config.max_samples)
-    println("📈 总组合数: $total_combinations")
+    # 采样数量采用BigInt计算，转Int前裁剪到上限
+    est_samples_big = round(Int, min(big(config.max_samples), total_combinations_big * big(config.sample_fraction)))
+    n_samples = clamp(est_samples_big, 1, config.max_samples)
+    println("📈 总组合数: $(string(total_combinations_big))")
     println("🎯 目标样本数: $n_samples")
 
     # 使用热力学约束的参数生成
@@ -322,11 +357,10 @@ function generate_small_scale_data(surrogate_model::SurrogateModel)
 
         # 检查GPU仿真结果
         valid_indices_gpu = findall(x -> !any(isnan.(x)), eachrow(y_samples))
-        if length(valid_indices_gpu) == 0
-            println("⚠️  GPU仿真产生了全部NaN结果，回退到CPU仿真...")
-            y_samples = simulate_parameter_batch(X_samples, param_space.tspan, config.target_variables)
-        else
+        if length(valid_indices_gpu) > 0
             println("✅ GPU仿真成功，有效结果: $(length(valid_indices_gpu))/$(size(y_samples,1))")
+        else
+            println("❌ GPU仿真产生了全部NaN结果（纯GPU模式禁用CPU回退）")
         end
     else
         println("💻 使用CPU仿真")
@@ -345,30 +379,12 @@ function generate_small_scale_data(surrogate_model::SurrogateModel)
 
     println("✅ 有效样本数: $(size(X_clean, 1)) / $n_samples")
 
-    # 如果仿真后仍然没有有效样本，尝试最后的回退方案
-    if size(X_clean, 1) == 0
-        println("🚨 严重警告: 所有仿真都失败了！")
-        println("🔄 尝试最后的回退方案：无约束采样 + CPU仿真...")
-
-        # 生成更简单的无约束样本
-        X_fallback = generate_lhs_samples(param_space, min(100, n_samples))  # 使用较小的样本数
-        println("📊 回退样本数: $(size(X_fallback, 1))")
-
-        # 强制CPU仿真
-        y_fallback = simulate_parameter_batch(X_fallback, param_space.tspan, config.target_variables)
-
-        # 过滤结果
-        valid_indices_fallback = findall(x -> !any(isnan.(x)), eachrow(y_fallback))
-        X_clean = X_fallback[valid_indices_fallback, :]
-        y_clean = y_fallback[valid_indices_fallback, :]
-
-        println("🔄 回退方案结果: $(size(X_clean, 1)) 个有效样本")
-    end
+    # 纯GPU模式：不执行CPU回退
 
     if config.apply_thermodynamic_constraints && size(X_clean, 1) > 0
-        original_combinations = length(param_space.k1f_range)^8 * length(param_space.A_range) * length(param_space.B_range) *
-                               length(param_space.C_range) * length(param_space.E1_range) * length(param_space.E2_range)
-        reduction_factor = original_combinations / size(X_clean, 1)
+        original_combinations = big(length(param_space.k1f_range))^8 * big(length(param_space.A_range)) * big(length(param_space.B_range)) *
+                               big(length(param_space.C_range)) * big(length(param_space.E1_range)) * big(length(param_space.E2_range))
+        reduction_factor = Float64(original_combinations) / max(size(X_clean, 1), 1)
         println("📉 热力学约束参数空间缩减: $(round(reduction_factor, digits=1))x")
     end
 
@@ -446,20 +462,7 @@ function generate_constrained_lhs_samples(param_space::ParameterSpace, n_samples
         println("🔄 使用无约束拉丁超立方采样作为后备方案...")
 
         # 临时禁用约束并生成样本
-        backup_config = SurrogateModelConfig(
-            sample_fraction = config.sample_fraction,
-            max_samples = config.max_samples,
-            epochs = config.epochs,
-            use_cuda = config.use_cuda,
-            apply_thermodynamic_constraints = false,  # 临时禁用约束
-            keq_min = config.keq_min,
-            keq_max = config.keq_max,
-            use_pca = config.use_pca,
-            pca_variance_threshold = config.pca_variance_threshold,
-            target_variables = config.target_variables,
-            verbose = config.verbose
-        )
-
+        # 临时禁用约束，退回无约束采样
         X_samples = generate_lhs_samples(param_space, n_samples)
         println("✅ 生成了$(size(X_samples, 1))个无约束样本")
     end
@@ -569,16 +572,12 @@ function simulate_parameter_batch_gpu(X_samples::Matrix{Float64}, tspan::Tuple{F
 
         valid_count = sum(x -> !any(isnan.(x)), eachrow(y_samples))
         println("✅ GPU仿真完成: $valid_count/$n_samples 有效结果")
-
-        if valid_count == 0
-            println("⚠️  所有GPU结果无效，回退到CPU")
-            return simulate_parameter_batch(X_samples, tspan, target_vars)
-        end
-
         return y_samples
     catch e
-        println("⚠️  GPU求解失败: $e")
-        return simulate_parameter_batch(X_samples, tspan, target_vars)
+        println("⚠️  GPU求解失败（纯GPU模式）: $e")
+        # 返回全NaN以指示失败
+        y_samples = fill(NaN, n_samples, n_outputs)
+        return y_samples
     finally
         cleanup_gpu_resources!(solver)
     end
@@ -761,30 +760,55 @@ function solve_gpu_batch_chunk(X_chunk, u0s_chunk, ps_chunk, tspan, target_vars,
 
     # ODE函数定义 - GPU兼容版本
     function reaction_ode!(du, u, p, t)
-        k1f, k1r, k2f, k2r, k3f, k3r, k4f, k4r = p.k1f, p.k1r, p.k2f, p.k2r, p.k3f, p.k3r, p.k4f, p.k4r
-        A, B, C, E1, E2, AE1, BE2 = max.(u, 0.0)  # 确保非负
+        # 兼容参数类型（具名字段或元组）
+        k1f = Base.hasproperty(p, :k1f) ? p.k1f : p[1]
+        k1r = Base.hasproperty(p, :k1r) ? p.k1r : p[2]
+        k2f = Base.hasproperty(p, :k2f) ? p.k2f : p[3]
+        k2r = Base.hasproperty(p, :k2r) ? p.k2r : p[4]
+        k3f = Base.hasproperty(p, :k3f) ? p.k3f : p[5]
+        k3r = Base.hasproperty(p, :k3r) ? p.k3r : p[6]
+        k4f = Base.hasproperty(p, :k4f) ? p.k4f : p[7]
+        k4r = Base.hasproperty(p, :k4r) ? p.k4r : p[8]
 
-        du[1] = -k1f*A*E1 + k1r*AE1
-        du[2] = k2f*AE1 - k2r*B*E1 - k3f*B*E2 + k3r*BE2
-        du[3] = k4f*BE2 - k4r*C*E2
-        du[4] = -k1f*A*E1 + k1r*AE1 + k2f*AE1 - k2r*B*E1
-        du[5] = -k3f*B*E2 + k3r*BE2 + k4f*BE2 - k4r*C*E2
-        du[6] = k1f*A*E1 - k1r*AE1 - k2f*AE1 + k2r*B*E1
-        du[7] = k3f*B*E2 - k3r*BE2 - k4f*BE2 + k4r*C*E2
+        # 标量无分配的非负限制（避免 max. 广播）
+        A   = ifelse(u[1] > 0.0, u[1], 0.0)
+        B   = ifelse(u[2] > 0.0, u[2], 0.0)
+        C   = ifelse(u[3] > 0.0, u[3], 0.0)
+        E1  = ifelse(u[4] > 0.0, u[4], 0.0)
+        E2  = ifelse(u[5] > 0.0, u[5], 0.0)
+        AE1 = ifelse(u[6] > 0.0, u[6], 0.0)
+        BE2 = ifelse(u[7] > 0.0, u[7], 0.0)
+
+        @inbounds begin
+            du[1] = -k1f*A*E1 + k1r*AE1
+            du[2] = k2f*AE1 - k2r*B*E1 - k3f*B*E2 + k3r*BE2
+            du[3] = k4f*BE2 - k4r*C*E2
+            du[4] = -k1f*A*E1 + k1r*AE1 + k2f*AE1 - k2r*B*E1
+            du[5] = -k3f*B*E2 + k3r*BE2 + k4f*BE2 - k4r*C*E2
+            du[6] = k1f*A*E1 - k1r*AE1 - k2f*AE1 + k2r*B*E1
+            du[7] = k3f*B*E2 - k3r*BE2 - k4f*BE2 + k4r*C*E2
+        end
     end
 
     try
-        # 使用真正的GPU求解器
-        prob_func = (prob, i, repeat) -> remake(prob, u0=u0s_chunk[i], p=ps_chunk[i])
-        
-        # 创建EnsembleProblem
-        prob = ODEProblem(reaction_ode!, u0s_chunk[1], tspan, ps_chunk[1])
+        su0_first = _to_su0(u0s_chunk[1])
+        pp_first = _to_pp(ps_chunk[1])
+
+        # 使用真正的GPU求解器（Kernel）
+        prob_func = (prob, i, repeat) -> remake(prob, u0=_to_su0(u0s_chunk[i]), p=_to_pp(ps_chunk[i]))
+
+        # 创建EnsembleProblem（SVector + isbits参数）
+        prob = ODEProblem(reaction_ode!, su0_first, tspan, pp_first)
         ensemble_prob = EnsembleProblem(prob, prob_func=prob_func)
         
         # 使用DiffEqGPU进行GPU并行求解
-        sol = solve(ensemble_prob, Tsit5(), EnsembleGPUArray(0), 
-                   trajectories=n_chunk, saveat=0.1, 
-                   abstol=1e-6, reltol=1e-3)
+        # 优先使用 Kernel 模式以提升GPU占用
+        alg = EnsembleGPUKernel(CUDADevice())
+        sol = solve(ensemble_prob, Tsit5(), alg,
+                    trajectories=n_chunk, save_everystep=false, save_start=false,
+                    batch_size=1024,
+                    unstable_check=false,
+                    abstol=1e-6, reltol=1e-3)
         
         # 提取结果
         for i in 1:n_chunk
@@ -1110,6 +1134,26 @@ end
 # 引入Gaussian Process实现（需要 SurrogateModel 已定义）
 include("gaussian_process.jl")
 
+# ================= GPU Kernel Utilities (top-level) =================
+# Use GPUParams from gpu_parallel_optimized.jl (Float64)
+@inline function _to_su0(u)
+    return SVector{7,Float64}(
+        Float64(u[1]), Float64(u[2]), Float64(u[3]),
+        Float64(u[4]), Float64(u[5]), Float64(u[6]), Float64(u[7])
+    )
+end
+
+@inline function _to_pp(p)
+    # p may be NamedTuple / struct with fields
+    if Base.hasproperty(p, :k1f)
+        return GPUParams(Float64(p.k1f), Float64(p.k1r), Float64(p.k2f), Float64(p.k2r),
+                         Float64(p.k3f), Float64(p.k3r), Float64(p.k4f), Float64(p.k4r))
+    else
+        return GPUParams(Float64(p[1]), Float64(p[2]), Float64(p[3]), Float64(p[4]),
+                         Float64(p[5]), Float64(p[6]), Float64(p[7]), Float64(p[8]))
+    end
+end
+
 """
     predict_with_uncertainty(surrogate_model::SurrogateModel, X_new::Matrix{Float64}; n_samples::Int=100)
 
@@ -1136,17 +1180,18 @@ function predict_with_uncertainty(surrogate_model::SurrogateModel, X_new::Matrix
         y_pred_std = zeros(size(y_pred_mean))
     elseif config.uncertainty_estimation && config.model_type == :neural_network
         # 使用MC Dropout进行不确定性估计（强制启用dropout）
-        Flux.trainmode!(surrogate_model.model)
-        preds = Array{Float64}[]
-        for _ in 1:n_samples
-            y = surrogate_model.model(X_processed')
-            push!(preds, Array(y') )
+        # 注意：需要在预测时启用 Dropout，训练时关闭 BatchNorm（未用到）
+        Flux.testmode!(surrogate_model.model, false)  # ensure dropout active
+        preds = Vector{Array{Float64,2}}(undef, n_samples)
+        for i in 1:n_samples
+            y = surrogate_model.model(X_processed')  # [D, N]
+            preds[i] = Array(y')                    # [N, D]
         end
-        Flux.testmode!(surrogate_model.model)
+        Flux.testmode!(surrogate_model.model, true)
 
-        predictions_array = cat(preds..., dims=3)  # [N, D, M]
-        y_pred_mean = mean(predictions_array, dims=3)[:, :, 1]
-        y_pred_std = std(predictions_array, dims=3)[:, :, 1]
+        predictions_array = cat(preds...; dims=3)  # [N, D, M]
+        y_pred_mean = dropdims(mean(predictions_array; dims=3), dims=3)
+        y_pred_std  = dropdims(std(predictions_array; dims=3),  dims=3)
     else
         # 普通预测
         y_pred_normalized = surrogate_model.model(X_processed')'
@@ -1364,13 +1409,16 @@ function large_scale_parameter_scan(surrogate_model::SurrogateModel, scan_config
         end
     end
 
-    # 计算总组合数
-    total_combinations = prod(length.(varying_param_ranges))
-    println("📈 理论总组合数: $total_combinations")
+    # 计算总组合数（使用BigInt避免溢出）
+    total_lengths = map(r -> length(r), varying_param_ranges)
+    total_combinations_big = prod(big.(total_lengths))
+    println("📈 理论总组合数: $(string(total_combinations_big))")
 
-    if total_combinations > max_combinations
+    # 决定是否采样
+    need_sampling = total_combinations_big > big(max_combinations)
+    if need_sampling
         # 使用采样减少组合数
-        sample_fraction = max_combinations / total_combinations
+        sample_fraction = Float64(big(max_combinations) / total_combinations_big)
         println("📊 采样比例: $(round(sample_fraction*100, digits=2))%")
 
         # 生成采样参数组合
@@ -1378,8 +1426,23 @@ function large_scale_parameter_scan(surrogate_model::SurrogateModel, scan_config
             varying_param_ranges, varying_param_indices, default_values, max_combinations, config)
     else
         # 生成所有组合
-        X_scan = generate_complete_parameter_combinations_full(
-            varying_param_ranges, varying_param_indices, default_values)
+        # 只有在组合数可以安全转为Int且规模合理时才生成完整笛卡尔积
+        n_combinations_big = total_combinations_big
+        if n_combinations_big > big(typemax(Int))
+            println("⚠️  组合数超过Int上限，改用采样模式")
+            X_scan = generate_complete_parameter_combinations_sampled(
+                varying_param_ranges, varying_param_indices, default_values, max_combinations, config)
+        else
+            n_combinations = Int(n_combinations_big)
+            if n_combinations > 5_000_000
+                println("⚠️  组合数过大($(n_combinations))，为避免内存问题改用采样模式")
+                X_scan = generate_complete_parameter_combinations_sampled(
+                    varying_param_ranges, varying_param_indices, default_values, max_combinations, config)
+            else
+                X_scan = generate_complete_parameter_combinations_full(
+                    varying_param_ranges, varying_param_indices, default_values)
+            end
+        end
     end
 
     n_scan = size(X_scan, 1)
@@ -1469,8 +1532,18 @@ function generate_complete_parameter_combinations_sampled(varying_param_ranges::
 end
 
 function generate_complete_parameter_combinations_full(varying_param_ranges::Vector, varying_param_indices::Vector, default_values::Vector)
-    # 生成所有组合的完整13维参数向量
-    n_combinations = prod(length.(varying_param_ranges))
+    # 生成所有组合的完整13维参数向量（安全版）
+    lengths_vec = map(r -> length(r), varying_param_ranges)
+    n_combinations_big = prod(big.(lengths_vec))
+
+    # 安全上限，避免内存/整数溢出
+    if n_combinations_big > big(typemax(Int)) || Int(n_combinations_big) > 5_000_000
+        println("⚠️  组合数过大，自动切换为采样生成以避免内存问题")
+        n_samples = min(100_000, 5_000_000)
+        return _sample_parameter_combinations_no_constraint(varying_param_ranges, varying_param_indices, default_values, n_samples)
+    end
+
+    n_combinations = Int(n_combinations_big)
     X_combinations = zeros(n_combinations, 13)
 
     # 创建笛卡尔积
@@ -1489,6 +1562,22 @@ function generate_complete_parameter_combinations_full(varying_param_ranges::Vec
     end
 
     return X_combinations
+end
+
+# 无约束的采样生成（用于超大组合回退）
+function _sample_parameter_combinations_no_constraint(varying_param_ranges::Vector, varying_param_indices::Vector, default_values::Vector, n_samples::Int)
+    X_samples = zeros(n_samples, 13)
+    Random.seed!(42)
+    for i in 1:n_samples
+        sample = copy(default_values)
+        for (j, param_idx) in enumerate(varying_param_indices)
+            r = varying_param_ranges[j]
+            idx = rand(1:length(r))
+            sample[param_idx] = r[idx]
+        end
+        X_samples[i, :] = sample
+    end
+    return X_samples
 end
 
 """
@@ -1575,3 +1664,202 @@ export generate_small_scale_data, preprocess_data!, train_surrogate_model!
 export predict_with_uncertainty, save_surrogate_model, load_surrogate_model
 export compare_surrogate_vs_cuda, large_scale_parameter_scan, create_performance_report
 export configure_cuda_device, check_thermodynamic_constraints
+
+# ================= TOML Configuration Utilities =================
+
+"""
+    _parse_range(value)
+
+Parse a range specification from TOML. Supports:
+- {start=Float, step=Float, stop=Float}
+- {start=Float, stop=Float, length=Int}
+- [v1, v2, ..., vn] (converted to LinRange with equal spacing)
+- Float or Int (treated as a degenerate 1-length range)
+"""
+function _parse_range(value)
+    if isa(value, AbstractDict)
+        haskey(value, "start") || error("range table must have 'start'")
+        haskey(value, "stop")  || error("range table must have 'stop'")
+        startv = float(value["start"])
+        stopv  = float(value["stop"])
+        if haskey(value, "step")
+            stepv = float(value["step"])
+            return range(startv, step=stepv, stop=stopv)
+        elseif haskey(value, "length")
+            lenv = Int(value["length"]) 
+            lenv > 0 || error("range length must be > 0")
+            return range(startv, stop=stopv, length=lenv)
+        else
+            error("range table must have 'step' or 'length'")
+        end
+    elseif isa(value, AbstractVector)
+        if length(value) == 0
+            error("range array must be non-empty")
+        elseif length(value) == 1
+            v = float(value[1])
+            return range(v, stop=v, length=1)
+        else
+            v1 = float(value[1])
+            vn = float(value[end])
+            return range(v1, stop=vn, length=length(value))
+        end
+    elseif isa(value, Real)
+        v = float(value)
+        return range(v, stop=v, length=1)
+    else
+        error("unsupported range specification: $(typeof(value))")
+    end
+end
+
+"""
+    load_surrogate_from_toml(path::AbstractString)
+
+Load `SurrogateModelConfig` and `ParameterSpace` from a TOML file.
+"""
+function load_surrogate_from_toml(path::AbstractString)
+    cfg = TOML.parsefile(path)
+
+    # ---------------- SurrogateModelConfig ----------------
+    data_cfg = get(cfg, "data", Dict())
+    model_cfg = get(cfg, "model", Dict())
+    train_cfg = get(cfg, "training", Dict())
+    pca_cfg = get(cfg, "pca", Dict())
+    cuda_cfg = get(cfg, "cuda", Dict())
+    thermo_cfg = get(cfg, "constraints", Dict())
+    outputs_cfg = get(cfg, "outputs", Dict())
+
+    # target variables
+    targets = get(outputs_cfg, "target_variables", ["A_final", "B_final", "C_final", "v1_mean", "v2_mean"]) 
+    target_syms = Symbol.(String.(targets))
+
+    hidden_dims = get(model_cfg, "hidden_dims", [64, 32, 16])
+    hidden_dims_vec = Int.(hidden_dims)
+
+    config = SurrogateModelConfig(
+        sample_fraction = float(get(data_cfg, "sample_fraction", 0.1)),
+        max_samples = Int(get(data_cfg, "max_samples", 10000)),
+
+        model_type = Symbol(get(model_cfg, "model_type", "neural_network")),
+        hidden_dims = hidden_dims_vec,
+        dropout_rate = float(get(model_cfg, "dropout_rate", 0.1)),
+
+        epochs = Int(get(train_cfg, "epochs", 100)),
+        batch_size = Int(get(train_cfg, "batch_size", 32)),
+        learning_rate = float(get(train_cfg, "learning_rate", 1e-3)),
+        validation_split = float(get(train_cfg, "validation_split", 0.2)),
+
+        use_pca = Bool(get(pca_cfg, "use_pca", true)),
+        pca_variance_threshold = float(get(pca_cfg, "pca_variance_threshold", 0.95)),
+
+        target_variables = target_syms,
+        uncertainty_estimation = Bool(get(outputs_cfg, "uncertainty_estimation", true)),
+
+        use_cuda = Bool(get(cuda_cfg, "use_cuda", true)),
+        cuda_batch_size = Int(get(cuda_cfg, "cuda_batch_size", 1000)),
+
+        apply_thermodynamic_constraints = Bool(get(thermo_cfg, "apply", true)),
+        constraint_mode = Symbol(get(thermo_cfg, "mode", "range")),
+        keq_min = float(get(thermo_cfg, "keq_min", 0.01)),
+        keq_max = float(get(thermo_cfg, "keq_max", 100.0)),
+        keq1_fixed = haskey(thermo_cfg, "keq1") ? float(thermo_cfg["keq1"]) : nothing,
+        keq2_fixed = haskey(thermo_cfg, "keq2") ? float(thermo_cfg["keq2"]) : nothing,
+        keq_tolerance = float(get(thermo_cfg, "tolerance", 1e-3))
+    )
+
+    # ---------------- ParameterSpace ----------------
+    space_cfg = get(cfg, "space", Dict())
+    rates_cfg = get(space_cfg, "rates", Dict())
+    init_cfg = get(space_cfg, "init", Dict())
+    tspan_cfg = get(space_cfg, "tspan", Dict("t0"=>0.0, "t1"=>5.0))
+
+    ps = ParameterSpace(
+        _parse_range(get(rates_cfg, "k1f", 0.1:0.02:20.0)),
+        _parse_range(get(rates_cfg, "k1r", 0.1:0.02:20.0)),
+        _parse_range(get(rates_cfg, "k2f", 0.1:0.02:20.0)),
+        _parse_range(get(rates_cfg, "k2r", 0.1:0.02:20.0)),
+        _parse_range(get(rates_cfg, "k3f", 0.1:0.02:20.0)),
+        _parse_range(get(rates_cfg, "k3r", 0.1:0.02:20.0)),
+        _parse_range(get(rates_cfg, "k4f", 0.1:0.02:20.0)),
+        _parse_range(get(rates_cfg, "k4r", 0.1:0.02:20.0)),
+
+        _parse_range(get(init_cfg, "A", 0.1:0.02:20.0)),
+        _parse_range(get(init_cfg, "B", 0.0:0.02:20.0)),
+        _parse_range(get(init_cfg, "C", 0.0:0.02:20.0)),
+        _parse_range(get(init_cfg, "E1", 0.1:0.02:20.0)),
+        _parse_range(get(init_cfg, "E2", 0.1:0.02:20.0)),
+
+        (float(get(tspan_cfg, "t0", 0.0)), float(get(tspan_cfg, "t1", 5.0)))
+    )
+
+    return config, ps
+end
+
+"""
+    save_example_config_toml(path::AbstractString)
+
+Write an example TOML configuration file covering all fields.
+"""
+function save_example_config_toml(path::AbstractString)
+    example = """
+# Surrogate Model TOML configuration
+
+[data]
+sample_fraction = 0.1
+max_samples = 10000
+
+[model]
+model_type = "neural_network"   # or "gaussian_process"
+hidden_dims = [256, 128, 64, 32]
+dropout_rate = 0.2
+
+[training]
+epochs = 300
+batch_size = 256
+learning_rate = 1e-3
+validation_split = 0.2
+
+[pca]
+use_pca = true
+pca_variance_threshold = 0.95
+
+[cuda]
+use_cuda = true
+cuda_batch_size = 16384
+
+[constraints]
+apply = true
+keq_min = 0.01
+keq_max = 100.0
+
+[outputs]
+target_variables = ["A_final", "B_final", "C_final", "v1_mean", "v2_mean"]
+uncertainty_estimation = true
+
+[space.rates]
+k1f = { start = 0.1, step = 0.02, stop = 20.0 }
+k1r = { start = 0.1, step = 0.02, stop = 20.0 }
+k2f = { start = 0.1, step = 0.02, stop = 20.0 }
+k2r = { start = 0.1, step = 0.02, stop = 20.0 }
+k3f = { start = 0.1, step = 0.02, stop = 20.0 }
+k3r = { start = 0.1, step = 0.02, stop = 20.0 }
+k4f = { start = 0.1, step = 0.02, stop = 20.0 }
+k4r = { start = 0.1, step = 0.02, stop = 20.0 }
+
+[space.init]
+A  = { start = 0.1, step = 0.02, stop = 20.0 }
+B  = { start = 0.0, step = 0.02, stop = 5.0 }
+C  = { start = 0.0, step = 0.02, stop = 5.0 }
+E1 = { start = 1.0, step = 0.02, stop = 20.0 }
+E2 = { start = 1.0, step = 0.02, stop = 20.0 }
+
+[space.tspan]
+t0 = 0.0
+t1 = 5.0
+"""
+    open(path, "w") do io
+        write(io, example)
+    end
+    return path
+end
+
+export load_surrogate_from_toml, save_example_config_toml

@@ -1,0 +1,93 @@
+# Auto-generated glycolysis parameters
+
+[conditions]
+temperature = 298.15
+pH = 7.0
+ionic_strength = 0.25
+pMg = 3.0
+
+[reactions]
+step1 = "glucose + atp <=> g6p + adp + h"
+step2 = "g6p <=> f6p"
+step3 = "f6p + atp <=> fdp + adp + h"
+step4 = "fdp <=> dhap + g3p"
+step5 = "dhap <=> g3p"
+step6 = "g3p + nad + pi <=> 13dpg + nadh + h"
+step7 = "13dpg + adp <=> 3pg + atp"
+step8 = "3pg <=> 2pg"
+step9 = "2pg <=> pep + h2o"
+step10 = "pep + adp + h <=> pyruvate + atp"
+
+[deltaG]
+step1 = -20.4
+step2 = -3.8
+step3 = 2.6
+step4 = -16.7
+step5 = 4.9
+step6 = 5.6
+step7 = 18.3
+step8 = -19.5
+step9 = -3.8
+step10 = -25.1
+
+[deltaG_source]
+step1 = "toml_fallback"
+step2 = "toml_fallback"
+step3 = "toml_fallback"
+step4 = "toml_fallback"
+step5 = "toml_fallback"
+step6 = "toml_fallback"
+step7 = "toml_fallback"
+step8 = "toml_fallback"
+step9 = "toml_fallback"
+step10 = "toml_fallback"
+
+[k1]
+kf = 1.0
+kr = 0.0002666095859540557
+ec = "2.7.1.1"
+
+[k2]
+kf = 1.0
+kr = 0.21588961870364778
+ec = "5.3.1.9"
+
+[k3]
+kf = 1.0
+kr = 2.85447102120933
+ec = "2.7.1.11"
+
+[k4]
+kf = 1.0
+kr = 0.001186106768672188
+ec = "4.1.2.13"
+
+[k5]
+kf = 1.0
+kr = 7.2192258076545865
+ec = "5.3.1.1"
+
+[k6]
+kf = 1.0
+kr = 9.574853641665284
+ec = "1.2.1.12"
+
+[k7]
+kf = 1.0
+kr = 1607.6802830048837
+ec = "2.7.2.3"
+
+[k8]
+kf = 1.0
+kr = 0.0003833166748911498
+ec = "5.4.2.1"
+
+[k9]
+kf = 1.0
+kr = 0.21588961870364778
+ec = "4.2.1.11"
+
+[k10]
+kf = 1.0
+kr = 4.0033685029203434e-05
+ec = "2.7.1.40"

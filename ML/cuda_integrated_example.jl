@@ -12,7 +12,7 @@ CUDA集成代理模型综合示例
 6. 实用的工程应用场景
 """
 
-using Pkg
+# using Pkg
 # Pkg.add(["Flux", "MLJ", "Surrogates", "MultivariateStats", "JLD2", "ProgressMeter", "CUDA", "DiffEqGPU"])
 
 include("surrogate_model.jl")
@@ -43,16 +43,16 @@ function cuda_integrated_workflow()
     config = SurrogateModelConfig(
         # 数据生成配置
         sample_fraction = 0.15,          # 增加到15%获得更好精度
-        max_samples = 10000,
+        max_samples = 100000,
 
         # 模型配置
         model_type = :neural_network,
-        hidden_dims = [128, 64, 32],     # 更深的网络
-        dropout_rate = 0.15,
+        hidden_dims = [256, 128, 64, 32],     # 增加模型容量以提升表达力
+        dropout_rate = 0.2,
 
         # 训练配置
-        epochs = 150,                    # 更多训练轮数
-        batch_size = 64,
+        epochs = 1000,                    # 稍增训练轮数
+        batch_size = 256,                # 更大batch利于GPU训练
         learning_rate = 1e-3,
         validation_split = 0.2,
 
@@ -62,7 +62,7 @@ function cuda_integrated_workflow()
 
         # CUDA配置
         use_cuda = cuda_available,       # 自动检测CUDA
-        cuda_batch_size = 2000,
+        cuda_batch_size = 16384,
 
         # 热力学约束配置
         apply_thermodynamic_constraints = true,  # 启用热力学约束
@@ -77,21 +77,21 @@ function cuda_integrated_workflow()
     # 创建扩展的参数空间
     param_space = ParameterSpace(
         # 反应速率常数（保持与CUDA扫描一致）
-        0.1:2:20.0,   # k1f_range (10 points)
-        0.1:2:20.0,   # k1r_range
-        0.1:2:20.0,   # k2f_range
-        0.1:2:20.0,   # k2r_range
-        0.1:2:20.0,   # k3f_range
-        0.1:2:20.0,   # k3r_range
-        0.1:2:20.0,   # k4f_range
-        0.1:2:20.0,   # k4r_range
+        0.1:0.02:20.0,   # k1f_range (10 points)
+        0.1:0.02:20.0,   # k1r_range
+        0.1:0.02:20.0,   # k2f_range
+        0.1:0.02:20.0,   # k2r_range
+        0.1:0.02:20.0,   # k3f_range
+        0.1:0.02:20.0,   # k3r_range
+        0.1:0.02:20.0,   # k4f_range
+        0.1:0.02:20.0,   # k4r_range
 
         # 初始浓度
-        5.0:2:20.0,   # A_range
-        0.0:1:5.0,    # B_range
-        0.0:1:5.0,    # C_range
-        5.0:2:20.0,   # E1_range
-        5.0:2:20.0,   # E2_range
+        0.1:0.02:20.0,   # A_range
+        0.0:0.02:5.0,    # B_range
+        0.0:0.02:5.0,    # C_range
+        1.0:0.02:20.0,   # E1_range
+        1.0:0.02:20.0,   # E2_range
 
         # 时间跨度
         (0.0, 5.0)
@@ -138,9 +138,16 @@ function cuda_integrated_workflow()
         :k1f => 0.1:0.5:20.0,    # 40 points
         :k1r => 0.1:0.5:20.0,    # 40 points
         :k2f => 0.1:0.5:20.0,    # 40 points
-        :A => 5.0:1.0:25.0,      # 21 points
+        :k2r => 0.1:0.5:20.0,    # 40 points
+        :k3f => 0.1:0.5:20.0,    # 40 points
+        :k3r => 0.1:0.5:20.0,    # 40 points
+        :k4f => 0.1:0.5:20.0,    # 40 points
+        :k4r => 0.1:0.5:20.0,    # 40 points
+        :A => 0.1:0.5:20.0,      # 21 points
         :B => 0.0:0.5:5.0,       # 11 points
-        :E1 => 5.0:1.0:25.0      # 21 points
+        :C => 0.0:0.5:5.0,       # 11 points
+        :E1 => 0.1:0.5:20.0,     # 21 points
+        :E2 => 0.1:0.5:20.0      # 21 points
     )
 
     # 计算理论组合数: 40^3 * 21^2 * 11 = 64000 * 441 * 11 ≈ 310M
@@ -512,6 +519,28 @@ function main()
         # 默认：完整工作流程
         surrogate_model, comparison_results, scan_results = cuda_integrated_workflow()
 
+    elseif endswith(ARGS[1], ".toml")
+        # 从TOML配置运行
+        cfg_path = ARGS[1]
+        println("🧩 从TOML加载配置: $cfg_path")
+        config, param_space = load_surrogate_from_toml(cfg_path)
+
+        if config.use_cuda
+            configure_cuda_device()
+        end
+
+        surrogate_model = SurrogateModel(config, param_space)
+        X_data, y_data = generate_small_scale_data(surrogate_model)
+        preprocess_data!(surrogate_model, X_data, y_data)
+        train_surrogate_model!(surrogate_model)
+
+        println("📊 进行快速对比评估 (200样本)...")
+        comparison_results = compare_surrogate_vs_cuda(surrogate_model, 200)
+
+        model_path = "/home/ryankwok/Documents/TwoEnzymeSim/ML/model/cuda_integrated_surrogate.jld2"
+        save_surrogate_model(surrogate_model, model_path)
+        println("✅ 已按TOML配置完成训练与保存: $model_path")
+
     elseif ARGS[1] == "quick"
         # 快速演示
         println("🚀 快速演示模式")
@@ -623,6 +652,7 @@ function main()
         println("  julia cuda_integrated_example.jl quick    # 快速演示")
         println("  julia cuda_integrated_example.jl benchmark # 性能测试")
         println("  julia cuda_integrated_example.jl test     # 测试模式（无约束）")
+        println("  julia cuda_integrated_example.jl /path/to/config.toml  # 使用TOML配置")
     end
 end
 

@@ -1,0 +1,155 @@
+# 贝叶斯优化配置文件 (Bayesian Optimization Configuration)
+# 实现指导文档第2大点：用ML优化算法替换网格扫描的统一配置
+
+# 单目标优化配置
+[single_objective]
+objective_type = "single_objective"
+optimization_direction = "maximize"     # "maximize" or "minimize"
+target_variable = "C_final"            # 目标变量：最大化产物C浓度
+
+# 贝叶斯优化核心参数
+n_initial_points = 40                  # 初始探索点数（提高精度：更多先验覆盖）
+n_iterations = 120                     # 贝叶斯优化迭代次数（提高精度：更充分收敛）
+acquisition_function = "ei"            # "ei" (Expected Improvement), "ucb", "poi"
+
+# 约束配置
+apply_constraints = true               # 是否应用热力学约束
+constraint_penalty = -1000.0          # 约束违反惩罚值
+exploration_weight = 2.0               # UCB探索权重
+improvement_threshold = 0.01           # POI改进阈值
+
+# 可视化配置
+plot_acquisition = true                # 是否绘制采集函数
+plot_convergence = true                # 是否绘制收敛曲线
+save_intermediate = true               # 是否保存中间结果
+
+# 多目标优化配置
+[multi_objective]
+objective_type = "multi_objective"
+optimization_direction = "maximize"
+multi_objectives = ["C_final", "v1_mean"]  # 多目标变量：产物浓度和反应速率
+multi_weights = [0.7, 0.3]                # 多目标权重：更重视产物浓度
+
+# 多目标专用参数
+n_initial_points = 50                      # 提高精度：扩大初始覆盖
+n_iterations = 150                         # 提高精度：更多迭代收敛
+acquisition_function = "ei"
+apply_constraints = true
+exploration_weight = 1.5                   # 多目标适度降低探索权重
+
+plot_acquisition = true
+plot_convergence = true
+save_intermediate = true
+
+# Gaussian Process 模型配置
+[gaussian_process]
+kernel = "matern52"                    # "matern52", "rbf", "matern32"
+noise_variance = 1e-6                  # GP噪声方差
+use_ard = true                         # 是否使用自动相关性确定
+
+# 优化算法配置
+[optimization]
+n_starts = 25                          # 提高精度：更多起点减少局部最优
+max_iterations = 300                   # 提高精度：更充分的内层优化
+convergence_tolerance = 1e-8           # 提高精度：更严格的收敛阈值
+
+# 约束配置详细参数
+[constraints]
+apply = true
+mode = "thermodynamic"                 # "thermodynamic", "range", "custom"
+
+# 热力学约束参数
+keq_min = 0.01                         # 平衡常数最小值
+keq_max = 100.0                        # 平衡常数最大值
+concentration_min = 0.0                # 浓度最小值
+concentration_max = 50.0               # 浓度最大值
+rate_constant_min = 0.01               # 速率常数最小值
+rate_constant_max = 100.0              # 速率常数最大值
+
+# 参数空间定义（与surrogate model保持一致）
+[parameter_space.rates]
+k1f = { min = 0.1, max = 20.0 }
+k1r = { min = 0.1, max = 20.0 }
+k2f = { min = 0.1, max = 20.0 }
+k2r = { min = 0.1, max = 20.0 }
+k3f = { min = 0.1, max = 20.0 }
+k3r = { min = 0.1, max = 20.0 }
+k4f = { min = 0.1, max = 20.0 }
+k4r = { min = 0.1, max = 20.0 }
+
+[parameter_space.initial_conditions]
+A  = { min = 0.1, max = 20.0 }
+B  = { min = 0.0, max = 5.0 }
+C  = { min = 0.0, max = 5.0 }
+E1 = { min = 1.0, max = 20.0 }
+E2 = { min = 1.0, max = 20.0 }
+
+[parameter_space.time]
+t0 = 0.0                               # 仿真开始时间
+t1 = 5.0                               # 仿真结束时间
+saveat = 0.1                           # 保存时间间隔
+
+# 采集函数比较配置
+[acquisition_comparison]
+functions = ["ei", "ucb", "poi"]       # 比较的采集函数列表
+n_initial_points = 30                  # 提高精度：更大初始覆盖
+n_iterations = 80                      # 提高精度：更多比较迭代
+n_runs = 5                             # 提高稳健性：增加重复次数
+
+# 约束优化专用配置
+[constraint_optimization]
+objective_type = "single_objective"
+target_variable = "C_final"
+n_initial_points = 60                  # 提高精度：更大初始覆盖
+n_iterations = 160                     # 提高精度：更多迭代
+acquisition_function = "ei"
+constraint_penalty = -10000.0          # 更严厉的约束惩罚
+exploration_weight = 3.0               # 增加探索以处理严格约束
+
+# 输出和保存配置
+[output]
+results_dir = "result"                 # 结果保存目录
+save_format = ["jld2", "csv"]          # 保存格式
+plot_format = "png"                    # 图片格式
+create_report = true                   # 是否生成综合报告
+
+# 并行计算配置
+[parallel]
+use_parallel = true                    # 启用并行以支撑更高精度带来的计算量
+n_workers = 4                          # 并行工作进程数
+batch_size = 10                        # 批处理大小
+
+# 实验配置模板
+[experiments.single_demo]
+name = "single_objective_demo"
+config_section = "single_objective"
+description = "单目标贝叶斯优化演示：最大化产物C浓度"
+
+[experiments.multi_demo]
+name = "multi_objective_demo"
+config_section = "multi_objective"
+description = "多目标贝叶斯优化演示：平衡产物浓度和反应速率"
+
+[experiments.acquisition_comp]
+name = "acquisition_comparison"
+config_section = "acquisition_comparison"
+description = "采集函数性能比较实验"
+
+[experiments.constraint_demo]
+name = "constraint_optimization"
+config_section = "constraint_optimization"
+description = "严格约束条件下的优化演示"
+
+# 高级配置
+[advanced]
+seed = 42                              # 随机种子，确保可重现性
+verbose = true                         # 详细输出
+debug_mode = false                     # 调试模式
+save_gp_model = true                   # 是否保存GP模型
+adaptive_sampling = false              # 自适应采样（实验功能）
+
+# 性能监控
+[monitoring]
+track_time = true                      # 是否跟踪运行时间
+track_memory = false                   # 是否跟踪内存使用
+log_level = "info"                     # 日志级别："debug", "info", "warn", "error"

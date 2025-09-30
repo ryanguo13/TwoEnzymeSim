@@ -1,0 +1,81 @@
+[k10]
+kr = 0.01
+kf = 200.0
+
+[k9]
+kr = 0.1
+kf = 50.0
+
+[k8]
+kr = 100.0
+kf = 100.0
+
+[k4]
+kr = 0.1
+kf = 20.0
+
+[supply]
+adp_in = 0.1
+h_out = 0.1
+nad_in = 0.1
+atp_in = 0.0
+atp_out = 0.05
+adp_out = 0.0
+nadh_out = 0.15
+pi_in = 0.15
+
+[k6]
+kr = 0.1
+kf = 150.0
+
+[deltaG]
+step4 = 6
+step8 = 4.5
+step2 = 2.6
+step3 = -17.8
+step1 = -20.4
+step5 = 5.6
+step9 = -3.8
+step7 = -19.5
+step10 = -25.0
+step6 = 18.3
+
+[k1]
+kr = 0.1
+kf = 100.0
+
+[k3]
+kr = 0.01
+kf = 80.0
+
+[k7]
+kr = 0.1
+kf = 300.0
+
+[k5]
+kr = 200.0
+kf = 200.0
+
+[k2]
+kr = 50.0
+kf = 50.0
+
+[initial_conditions]
+Glucose = 10.0
+ATP = 3.0
+DHAP = 0.0
+PG3 = 0.0
+Pyruvate = 0.0
+H = 1.0e-7
+NADH = 0.1
+F6P = 0.0
+PG2 = 0.0
+G6P = 0.0
+GAP = 0.0
+BPG13 = 0.0
+Pi = 10.0
+H2O = 55.5
+PEP = 0.0
+ADP = 0.5
+NAD = 0.9
+F16BP = 0.0

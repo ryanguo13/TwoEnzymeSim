@@ -377,3 +377,6 @@ end
 export train_gaussian_process!, predict_gaussian_process
 export create_adaptive_surrogate, create_ensemble_surrogate, predict_ensemble
 export plot_surrogate_performance, optimize_hyperparameters
+
+# Note: Surrogate configuration can be provided via TOML using
+# `load_surrogate_from_toml` defined in `surrogate_model.jl`.
